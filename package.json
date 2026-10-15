@@ -1,0 +1,9 @@
+{
+  "name": "oric-atmos-win32",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node server.js",
+    "build": "echo OK"
+  }
+}

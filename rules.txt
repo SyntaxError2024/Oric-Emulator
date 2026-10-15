@@ -1,0 +1,19 @@
+le fichier 110fr.rom est une rom atmos modifié pour avoir le clavier en français
+(la table des caractères est modifié)
+
+cyclotron.tap est un jeu atmos pour tester
+
+stock_basic11b.rom c'est la rom original anglaise
+
+#
+#
+#
+
+doit être compilable avec mingw64 en unicode pour windows
+
+pendant le développement afficher dans la console des informations de debug
+(example fichier chargé ou touche pressée)
+
+#
+
+NE PAS METTRE LE FICHIER COMPILÉ .EXE DANS LE DOSSIER.
