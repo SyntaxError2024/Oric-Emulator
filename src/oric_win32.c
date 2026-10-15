@@ -409,6 +409,7 @@ static void cpu_reset(void) {
     g_cpu.irq_pending = false;
     g_cpu.nmi_pending = false;
     g_cpu.cycles = 0;
+    memset(g_key_matrix, 0, sizeof(g_key_matrix));
 
     uint8_t lo = mem_read(0xFFFC);
     uint8_t hi = mem_read(0xFFFD);
@@ -997,55 +998,95 @@ static void keyboard_handle_vk(UINT vk, bool pressed) {
     int row = -1, col = -1;
 
     switch (vk) {
+        /* --- Touches de contrôle et navigation --- */
         case VK_SPACE:   row = 4; col = 0; key_name = L"ESPACE"; break;
-        case VK_RETURN:  row = 4; col = 3; key_name = L"ENTRÉE"; break;
-        case VK_ESCAPE:  row = 1; col = 4; key_name = L"ÉCHAP"; break;
-        case VK_BACK:    row = 3; col = 4; key_name = L"RETOUR"; break;
-        case VK_SHIFT:   row = 7; col = 4; key_name = L"MAJ"; break;
-        case VK_CONTROL: row = 2; col = 4; key_name = L"CTRL"; break;
+        case VK_RETURN:  row = 7; col = 5; key_name = L"ENTRÉE"; break;
+        case VK_ESCAPE:  row = 1; col = 5; key_name = L"ÉCHAP"; break;
+        case VK_BACK:    row = 5; col = 5; key_name = L"RETOUR"; break;
+        case VK_DELETE:  row = 5; col = 5; key_name = L"SUPPR"; break;
+        case VK_TAB:     row = 4; col = 7; key_name = L"TAB"; break;
 
-        case VK_LEFT:    row = 4; col = 6; key_name = L"GAUCHE"; break;
-        case VK_RIGHT:   row = 4; col = 4; key_name = L"DROITE"; break;
-        case VK_DOWN:    row = 4; col = 5; key_name = L"BAS"; break;
-        case VK_UP:      row = 4; col = 7; key_name = L"HAUT"; break;
+        case VK_SHIFT:
+        case VK_LSHIFT:
+        case VK_RSHIFT:  row = 4; col = 4; key_name = L"MAJ"; break;
 
-        case '1': row = 0; col = 5; key_name = L"1"; break;
-        case '2': row = 2; col = 6; key_name = L"2"; break;
-        case '3': row = 0; col = 7; key_name = L"3"; break;
-        case '4': row = 2; col = 3; key_name = L"4"; break;
-        case '5': row = 0; col = 2; key_name = L"5"; break;
-        case '6': row = 2; col = 1; key_name = L"6"; break;
-        case '7': row = 0; col = 0; key_name = L"7"; break;
-        case '8': row = 7; col = 0; key_name = L"8"; break;
-        case '9': row = 3; col = 1; key_name = L"9"; break;
-        case '0': row = 7; col = 1; key_name = L"0"; break;
+        case VK_CONTROL:
+        case VK_LCONTROL:
+        case VK_RCONTROL: row = 2; col = 4; key_name = L"CTRL"; break;
 
-        case 'A': row = 6; col = 4; key_name = L"A"; break;
+        /* --- Flèches directionnelles --- */
+        case VK_LEFT:    row = 4; col = 5; key_name = L"GAUCHE"; break;
+        case VK_RIGHT:   row = 4; col = 7; key_name = L"DROITE"; break;
+        case VK_DOWN:    row = 4; col = 6; key_name = L"BAS"; break;
+        case VK_UP:      row = 4; col = 3; key_name = L"HAUT"; break;
+
+        /* --- Chiffres 0-9 (principal et pavé numérique) --- */
+        case '0':
+        case VK_NUMPAD0: row = 7; col = 2; key_name = L"0"; break;
+        case '1':
+        case VK_NUMPAD1: row = 0; col = 5; key_name = L"1"; break;
+        case '2':
+        case VK_NUMPAD2: row = 2; col = 6; key_name = L"2"; break;
+        case '3':
+        case VK_NUMPAD3: row = 0; col = 7; key_name = L"3"; break;
+        case '4':
+        case VK_NUMPAD4: row = 2; col = 3; key_name = L"4"; break;
+        case '5':
+        case VK_NUMPAD5: row = 0; col = 2; key_name = L"5"; break;
+        case '6':
+        case VK_NUMPAD6: row = 2; col = 1; key_name = L"6"; break;
+        case '7':
+        case VK_NUMPAD7: row = 0; col = 0; key_name = L"7"; break;
+        case '8':
+        case VK_NUMPAD8: row = 7; col = 0; key_name = L"8"; break;
+        case '9':
+        case VK_NUMPAD9: row = 3; col = 1; key_name = L"9"; break;
+
+        /* --- Lettres A-Z --- */
+        case 'A': row = 6; col = 5; key_name = L"A"; break;
         case 'B': row = 2; col = 2; key_name = L"B"; break;
         case 'C': row = 2; col = 7; key_name = L"C"; break;
-        case 'D': row = 1; col = 6; key_name = L"D"; break;
+        case 'D': row = 1; col = 7; key_name = L"D"; break;
         case 'E': row = 6; col = 3; key_name = L"E"; break;
         case 'F': row = 1; col = 3; key_name = L"F"; break;
         case 'G': row = 6; col = 2; key_name = L"G"; break;
         case 'H': row = 6; col = 1; key_name = L"H"; break;
-        case 'I': row = 3; col = 7; key_name = L"I"; break;
+        case 'I': row = 5; col = 1; key_name = L"I"; break;
         case 'J': row = 1; col = 0; key_name = L"J"; break;
         case 'K': row = 3; col = 0; key_name = L"K"; break;
-        case 'L': row = 5; col = 2; key_name = L"L"; break;
+        case 'L': row = 7; col = 1; key_name = L"L"; break;
         case 'M': row = 2; col = 0; key_name = L"M"; break;
         case 'N': row = 0; col = 1; key_name = L"N"; break;
-        case 'O': row = 5; col = 1; key_name = L"O"; break;
-        case 'P': row = 3; col = 6; key_name = L"P"; break;
-        case 'Q': row = 1; col = 5; key_name = L"Q"; break;
+        case 'O': row = 5; col = 2; key_name = L"O"; break;
+        case 'P': row = 5; col = 3; key_name = L"P"; break;
+        case 'Q': row = 1; col = 6; key_name = L"Q"; break;
         case 'R': row = 1; col = 2; key_name = L"R"; break;
-        case 'S': row = 6; col = 5; key_name = L"S"; break;
+        case 'S': row = 6; col = 6; key_name = L"S"; break;
         case 'T': row = 1; col = 1; key_name = L"T"; break;
         case 'U': row = 5; col = 0; key_name = L"U"; break;
         case 'V': row = 0; col = 3; key_name = L"V"; break;
-        case 'W': row = 6; col = 6; key_name = L"W"; break;
+        case 'W': row = 6; col = 7; key_name = L"W"; break;
         case 'X': row = 0; col = 6; key_name = L"X"; break;
         case 'Y': row = 6; col = 0; key_name = L"Y"; break;
         case 'Z': row = 2; col = 5; key_name = L"Z"; break;
+
+        /* --- Ponctuation & Symboles --- */
+        case VK_OEM_COMMA:  row = 4; col = 1; key_name = L","; break;
+        case VK_OEM_PERIOD: row = 4; col = 2; key_name = L"."; break;
+        case VK_DECIMAL:    row = 4; col = 2; key_name = L"."; break;
+        case VK_OEM_1:      row = 3; col = 2; key_name = L";"; break;
+        case VK_OEM_MINUS:  row = 3; col = 3; key_name = L"-"; break;
+        case VK_SUBTRACT:   row = 3; col = 3; key_name = L"-"; break;
+        case VK_OEM_2:      row = 7; col = 3; key_name = L"/"; break;
+        case VK_DIVIDE:     row = 7; col = 3; key_name = L"/"; break;
+        case VK_OEM_PLUS:   row = 7; col = 7; key_name = L"="; break;
+        case VK_ADD:        row = 7; col = 7; key_name = L"+"; break;
+        case VK_MULTIPLY:   row = 7; col = 0; key_name = L"*"; break;
+        case VK_OEM_4:      row = 5; col = 7; key_name = L"["; break;
+        case VK_OEM_6:      row = 5; col = 6; key_name = L"]"; break;
+        case VK_OEM_5:      row = 3; col = 6; key_name = L"\\"; break;
+        case VK_OEM_7:      row = 3; col = 7; key_name = L"'"; break;
+        case VK_OEM_8:      row = 0; col = 5; key_name = L"!"; break;
     }
 
     if (row >= 0 && col >= 0) {
@@ -1168,9 +1209,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         case WM_KEYDOWN:
-            if (!(lParam & 0x40000000)) {
-                keyboard_handle_vk((UINT)wParam, true);
-            }
+            keyboard_handle_vk((UINT)wParam, true);
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Touche F5 enfoncée)");
                 cpu_reset();
@@ -1190,6 +1229,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case WM_KEYUP:
             keyboard_handle_vk((UINT)wParam, false);
+            return 0;
+
+        case WM_KILLFOCUS:
+            memset(g_key_matrix, 0, sizeof(g_key_matrix));
             return 0;
 
         case WM_PAINT: {
