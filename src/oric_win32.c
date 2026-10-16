@@ -6,16 +6,14 @@
  * - Compilation directe avec MinGW64 :
  *     gcc -O3 oric_win32.c -o oric_atmos.exe -municode -lgdi32 -lwinmm -lshell32
  * - Conforme aux exigences :
- *     - Langage C pur pour Windows en Unicode complet (wWinMain / wmain, wchar_t, MessageBoxW, etc.).
+ *     - Langage C pur pour Windows en Unicode complet (wWinMain / wmain, wchar_t, etc.).
  *     - Fichier source encodé en UTF-8.
  *     - Fichiers batch (.bat) encodés en Windows-1252.
- *     - Console de débogage active avec affichage en direct des événements
- *       (touches pressées, fichiers TAP/ROM chargés, mode écran TEXT/HIRES, etc.).
- *     - Glisser-déposer de fichiers .TAP et .ROM via WM_DROPFILES (Drag & Drop).
- *     - Démarrage automatique instantané (Turbo Tape) pour jeux machine et BASIC.
- *     - Émulation fidèle : MOS 6502 (BCD, IRQ, NMI), VIA 6522 (Timers 1 & 2),
- *       AY-3-8912 (son waveOut et matrice clavier 8x8), ULA vidéo (TEXT 40x28,
- *       HIRES 240x200 + 3 lignes de texte, attributs série Oric).
+ *     - Console de débogage active avec affichage en direct des événements.
+ *     - Glisser-déposer de fichiers .TAP et .ROM, et arguments en ligne de commande.
+ *     - Chargement K7 multi-blocs (Turbo Tape / Tape Trap) pour démos et jeux.
+ *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
+ *     - Plein écran par Alt+Entrée.
  * ============================================================================
  */
 
@@ -111,8 +109,6 @@ static const uint8_t ORIC_FONT_STANDARD[768] = {
     0x2A, 0x15, 0x2A, 0x15, 0x2A, 0x15, 0x2A, 0x15, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F
 };
 
-
-/* Table des glyphes accentués français de la ROM 110fr (8 glyphes de 8 octets) */
 static const uint8_t ORIC_FRENCH_GLYPHS[8][8] = {
     { 0x22, 0x22, 0x1E, 0x00, 0x00, 0x00, 0x1C, 0x22 }, /* 0: à */
     { 0x3E, 0x20, 0x1E, 0x00, 0x0C, 0x12, 0x10, 0x3C }, /* 1: é */
@@ -136,23 +132,24 @@ static bool g_hires_mode = false;
 static int g_frame_counter = 0;
 
 /* --- Matrice Clavier Oric (8x8) --- */
-/*
- * Colonnes sélectionnées par le port IO du AY-3-8912 (Reg 14, logique inversée)
- * Lignes lues via le multiplexeur 4051 piloté par VIA Port B (PB0..PB2).
- * Résultat lu sur VIA Port B bit 3 (1 = enfoncé, 0 = relâché).
- */
 static uint8_t g_key_matrix[8];
 
-/* Buffer de fichier .TAP */
+/* --- Structure Bloc TAP pour Chargement K7 Multi-blocs (Turbo Tape Trap) --- */
 typedef struct {
-    uint8_t *data;
-    size_t size;
-    size_t pos;
-    char current_name[32];
-    uint16_t start_addr;
-    uint16_t end_addr;
     uint8_t file_type;
     uint8_t autorun;
+    uint16_t start_addr;
+    uint16_t end_addr;
+    char name[32];
+    uint8_t *data;
+    size_t size;
+} TapBlock;
+
+typedef struct {
+    TapBlock *blocks;
+    int num_blocks;
+    int current_block_index;
+    char current_name[32];
     bool active;
 } TapeState;
 
@@ -239,14 +236,16 @@ static void ay_write_reg(uint8_t reg, uint8_t val);
 static void ay_check_control(void);
 static void oric_load_rom(const wchar_t *path);
 static void oric_inject_tap_and_run(const wchar_t *filename);
+static void keyboard_set_key(int row, int col, bool pressed);
 static void keyboard_handle_vk(UINT vk, bool pressed);
+static void keyboard_handle_char(wchar_t ch);
 static void audio_init(HWND hwnd);
 static void audio_update(void);
 static void audio_shutdown(void);
 static void video_render_frame(void);
 
 /* ============================================================================
- * CONSOLE DE DÉBOGAGE
+ * CONSOLE DE DÉBOGAGE UNICODE
  * ============================================================================ */
 static void debug_init(void) {
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
@@ -261,7 +260,7 @@ static void debug_init(void) {
 
     wprintf(L"===============================================================\n");
     wprintf(L"  Émulateur Oric Atmos Win32 (C Unicode / MinGW64)\n");
-    wprintf(L"  Console de débogage active\n");
+    wprintf(L"  Console de débogage active (UTF-8 / Unicode)\n");
     wprintf(L"===============================================================\n\n");
 }
 
@@ -290,11 +289,10 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * ACCÈS MÉMOIRE
+ * ACCÈS MÉMOIRE & TAPE TRAP (TURBO TAPE)
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
     if ((addr & 0xFF00) == 0x0300) {
-        /* Adresses 0x0310..0x03FF non mappées en l'absence de contrôleur disquette (bus flottant = 0xFF) */
         if ((addr & 0xFFF0) != 0x0300) {
             return 0xFF;
         }
@@ -352,9 +350,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
         if ((addr & 0xFFF0) != 0x0300) return;
         uint8_t reg = addr & 0x0F;
         switch (reg) {
-            case 0x00:
-                g_via.orb = val;
-                break;
+            case 0x00: g_via.orb = val; break;
             case 0x01:
             case 0x0F:
                 g_via.ora = val;
@@ -384,9 +380,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
                 g_via.pcr = val;
                 ay_check_control();
                 break;
-            case 0x0D:
-                g_via.ifr &= ~(val & 0x7F);
-                break;
+            case 0x0D: g_via.ifr &= ~(val & 0x7F); break;
             case 0x0E:
                 if (val & 0x80) g_via.ier |= (val & 0x7F);
                 else g_via.ier &= ~(val & 0x7F);
@@ -399,7 +393,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
 }
 
 /* ============================================================================
- * ÉMULATION CPU 6502
+ * ÉMULATION CPU 6502 & TAPE TRAP HOOK
  * ============================================================================ */
 static void cpu_reset(void) {
     g_cpu.a = 0;
@@ -429,7 +423,49 @@ static inline uint8_t cpu_pop(void) {
     return mem_read(0x0100 + (++g_cpu.sp & 0xFF));
 }
 
+/* Interception des routines ROM de chargement K7 (Turbo Tape Trap) */
+static void check_tape_trap(void) {
+    if (!g_tape.active) return;
+
+    /* Point d'entrée standard ROM Oric pour le chargement K7 (ex: F144 ou similaire) */
+    if (g_cpu.pc == 0xF144 || g_cpu.pc == 0xF21C || g_cpu.pc == 0xF200) {
+        if (g_tape.current_block_index < g_tape.num_blocks) {
+            TapBlock *blk = &g_tape.blocks[g_tape.current_block_index];
+            debug_log(L"Tape Trap : Chargement automatique du bloc #%d ('%hs', Start=0x%04X, End=0x%04X, Len=%u)",
+                      g_tape.current_block_index + 1, blk->name, blk->start_addr, blk->end_addr, (unsigned)blk->size);
+
+            for (size_t i = 0; i < blk->size; i++) {
+                uint16_t addr = blk->start_addr + (uint16_t)i;
+                if (addr >= 0 && addr <= 0xFFFF) {
+                    g_ram[addr] = blk->data[i];
+                }
+            }
+
+            if ((blk->file_type & 0x80) == 0) {
+                uint16_t end_p = blk->end_addr + 1;
+                g_ram[0x9A] = end_p & 0xFF;
+                g_ram[0x9B] = (end_p >> 8) & 0xFF;
+                g_ram[0x9C] = end_p & 0xFF;
+                g_ram[0x9D] = (end_p >> 8) & 0xFF;
+            }
+
+            g_tape.current_block_index++;
+
+            /* Simuler un retour de sous-programme réussi (A=0, Carry=0, RTS) */
+            g_cpu.a = 0;
+            g_cpu.p &= ~FLAG_C;
+            cpu_set_nz(0);
+
+            uint16_t lo = cpu_pop();
+            uint16_t hi = cpu_pop();
+            g_cpu.pc = (lo | (hi << 8)) + 1;
+        }
+    }
+}
+
 static void cpu_step(void) {
+    check_tape_trap();
+
     if (g_cpu.nmi_pending) {
         g_cpu.nmi_pending = false;
         cpu_push((g_cpu.pc >> 8) & 0xFF);
@@ -802,7 +838,6 @@ static void video_render_frame(void) {
                 uint8_t ch = g_ram[row_addr + col];
 
                 if ((ch & 0x60) == 0) {
-                    /* Octets d'attributs de série Oric */
                     if (ch < 8) {
                         ink = PALETTE[ch & 7];
                     } else if (ch >= 8 && ch < 16) {
@@ -825,11 +860,9 @@ static void video_render_frame(void) {
 
                     uint8_t pattern = g_ram[glyph_addr];
 
-                    /* Recherche dans la table de polices standard intégrée si la RAM n'est pas encore initialisée */
                     if (pattern == 0 && char_code >= 32) {
                         pattern = ORIC_FONT_STANDARD[(char_code - 32) * 8 + glyph_line];
 
-                        /* Remplacement par les caractères accentués français selon ISO-646-FR / Oric Atmos FR */
                         if (char_code == '@') pattern = ORIC_FRENCH_GLYPHS[0][glyph_line]; /* à */
                         else if (char_code == '{') pattern = ORIC_FRENCH_GLYPHS[1][glyph_line]; /* é */
                         else if (char_code == '}') pattern = ORIC_FRENCH_GLYPHS[2][glyph_line]; /* è */
@@ -858,8 +891,8 @@ static void video_render_frame(void) {
 }
 
 /* ============================================================================
- * CHARGEMENT ROM
- * ============================================================================ */
+    CHARGEMENT ROM
+   ============================================================================ */
 static void oric_load_rom(const wchar_t *path) {
     FILE *f = _wfopen(path, L"rb");
     if (!f) return;
@@ -876,7 +909,7 @@ static void oric_load_rom(const wchar_t *path) {
 }
 
 /* ============================================================================
- * CHARGEMENT .TAP ET AUTO-RUN (TURBO TAPE)
+ * CHARGEMENT .TAP & TURBO TAPE MULTI-BLOCS
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -914,84 +947,99 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
 
     debug_log(L"Fichier .TAP ouvert : %ls (Taille: %u octets)", filename, (unsigned)fsize);
 
-    if (g_tape.data) free(g_tape.data);
-    g_tape.data = buf;
-    g_tape.size = fsize;
-    g_tape.pos = 0;
-    g_tape.active = true;
+    if (g_tape.blocks) {
+        for (int i = 0; i < g_tape.num_blocks; i++) {
+            if (g_tape.blocks[i].data) free(g_tape.blocks[i].data);
+        }
+        free(g_tape.blocks);
+        g_tape.blocks = NULL;
+    }
 
     size_t ptr = 0;
-    int blocks_loaded = 0;
-    uint16_t first_start = 0;
-    uint8_t first_type = 0;
-    
-
+    int count = 0;
     while (ptr < fsize) {
         while (ptr < fsize && buf[ptr] != 0x24) ptr++;
         if (ptr >= fsize) break;
         ptr++;
-
         if (ptr + 9 > fsize) break;
-
-        uint8_t file_type = buf[ptr + 2];
-        uint8_t autorun   = buf[ptr + 3];
         uint16_t end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
         uint16_t start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
         ptr += 9;
-
-        char block_name[32] = {0};
-        int ni = 0;
-        while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
-            block_name[ni++] = (char)buf[ptr++];
-        }
+        size_t dlen = (end_addr >= start_addr) ? (end_addr - start_addr + 1) : 0;
+        while (ptr < fsize && buf[ptr] != 0) ptr++;
         if (ptr < fsize && buf[ptr] == 0) ptr++;
-
-        if (blocks_loaded == 0) {
-            memcpy(g_tape.current_name, block_name, sizeof(g_tape.current_name) - 1);
-            g_tape.current_name[sizeof(g_tape.current_name) - 1] = 0;
-            first_start = start_addr;
-            first_type = file_type;
-            (void)autorun;
-        }
-
-        size_t data_len = 0;
-        if (end_addr >= start_addr) {
-            data_len = end_addr - start_addr + 1;
-        }
-
-        wchar_t wblock_name[32];
-        ansi_to_wide(block_name, wblock_name, 32);
-
-        debug_log(L"Bloc TAP #%d : Nom=\"%ls\", Type=0x%02X (%ls), Début=0x%04X, Fin=0x%04X, Longueur=%u, Autorun=0x%02X",
-                  blocks_loaded + 1, wblock_name, file_type,
-                  (file_type & 0x80) ? L"Code Machine" : L"BASIC",
-                  start_addr, end_addr, (unsigned)data_len, autorun);
-
-        if (ptr + data_len <= fsize && data_len > 0) {
-            for (size_t i = 0; i < data_len; i++) {
-                g_ram[start_addr + (uint16_t)i] = buf[ptr + i];
-            }
-            ptr += data_len;
-
-            if ((file_type & 0x80) == 0) {
-                uint16_t end_p = end_addr + 1;
-                g_ram[0x9A] = end_p & 0xFF;
-                g_ram[0x9B] = (end_p >> 8) & 0xFF;
-                g_ram[0x9C] = end_p & 0xFF;
-                g_ram[0x9D] = (end_p >> 8) & 0xFF;
-            }
-            blocks_loaded++;
+        if (ptr + dlen <= fsize) {
+            ptr += dlen;
+            count++;
         } else {
             break;
         }
     }
 
-    if (blocks_loaded > 0) {
-        if (first_type & 0x80) {
-            debug_log(L"Démarrage automatique Code Machine à l'adresse 0x%04X", first_start);
-            g_cpu.pc = first_start;
+    g_tape.blocks = (TapBlock *)malloc(count * sizeof(TapBlock));
+    g_tape.num_blocks = count;
+    g_tape.current_block_index = 0;
+    g_tape.active = true;
+
+    ptr = 0;
+    int bidx = 0;
+    while (ptr < fsize && bidx < count) {
+        while (ptr < fsize && buf[ptr] != 0x24) ptr++;
+        if (ptr >= fsize) break;
+        ptr++;
+        if (ptr + 9 > fsize) break;
+
+        g_tape.blocks[bidx].file_type = buf[ptr + 2];
+        g_tape.blocks[bidx].autorun   = buf[ptr + 3];
+        g_tape.blocks[bidx].end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
+        g_tape.blocks[bidx].start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
+        ptr += 9;
+
+        int ni = 0;
+        while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
+            g_tape.blocks[bidx].name[ni++] = (char)buf[ptr++];
+        }
+        g_tape.blocks[bidx].name[ni] = 0;
+        if (ptr < fsize && buf[ptr] == 0) ptr++;
+
+        size_t dlen = (g_tape.blocks[bidx].end_addr >= g_tape.blocks[bidx].start_addr) ?
+                      (g_tape.blocks[bidx].end_addr - g_tape.blocks[bidx].start_addr + 1) : 0;
+
+        g_tape.blocks[bidx].size = dlen;
+        g_tape.blocks[bidx].data = (uint8_t *)malloc(dlen);
+        memcpy(g_tape.blocks[bidx].data, buf + ptr, dlen);
+        ptr += dlen;
+
+        wchar_t wname[32];
+        ansi_to_wide(g_tape.blocks[bidx].name, wname, 32);
+        debug_log(L"Bloc TAP #%d : Nom=\"%ls\", Type=0x%02X, Début=0x%04X, Fin=0x%04X, Longueur=%u",
+                  bidx + 1, wname, g_tape.blocks[bidx].file_type,
+                  g_tape.blocks[bidx].start_addr, g_tape.blocks[bidx].end_addr, (unsigned)dlen);
+
+        bidx++;
+    }
+
+    free(buf);
+
+    if (g_tape.num_blocks > 0) {
+        /* Charger immédiatement le premier bloc */
+        TapBlock *first = &g_tape.blocks[0];
+        memcpy(g_tape.current_name, first->name, sizeof(g_tape.current_name));
+        for (size_t i = 0; i < first->size; i++) {
+            g_ram[first->start_addr + (uint16_t)i] = first->data[i];
+        }
+        g_tape.current_block_index = 1;
+
+        if (first->file_type & 0x80) {
+            debug_log(L"Démarrage automatique Code Machine à 0x%04X", first->start_addr);
+            g_cpu.pc = first->start_addr;
         } else {
             debug_log(L"Démarrage automatique programme BASIC");
+            uint16_t end_p = first->end_addr + 1;
+            g_ram[0x9A] = end_p & 0xFF;
+            g_ram[0x9B] = (end_p >> 8) & 0xFF;
+            g_ram[0x9C] = end_p & 0xFF;
+            g_ram[0x9D] = (end_p >> 8) & 0xFF;
             g_ram[0x02DF] = 'R';
             g_ram[0x0208] = 0;
         }
@@ -999,7 +1047,7 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
 }
 
 /* ============================================================================
- * CLAVIER & MAPPING AZERTY / QWERTY
+ * GESTION CLAVIER ROBUSTE (AZERTY / QWERTY / SHIFT+3 POUR ")
  * ============================================================================ */
 static void keyboard_set_key(int row, int col, bool pressed) {
     if (row < 0 || row > 7 || col < 0 || col > 7) return;
@@ -1011,105 +1059,155 @@ static void keyboard_set_key(int row, int col, bool pressed) {
 }
 
 static void keyboard_handle_vk(UINT vk, bool pressed) {
-    const wchar_t *key_name = L"";
     int row = -1, col = -1;
 
     switch (vk) {
-        /* --- Touches de contrôle et navigation --- */
-        case VK_SPACE:   row = 4; col = 0; key_name = L"ESPACE"; break;
-        case VK_RETURN:  row = 7; col = 5; key_name = L"ENTRÉE"; break;
-        case VK_ESCAPE:  row = 1; col = 5; key_name = L"ÉCHAP"; break;
-        case VK_BACK:    row = 5; col = 5; key_name = L"RETOUR"; break;
-        case VK_DELETE:  row = 5; col = 5; key_name = L"SUPPR"; break;
-        case VK_TAB:     row = 4; col = 7; key_name = L"TAB"; break;
+        case VK_SPACE:   row = 4; col = 0; break;
+        case VK_RETURN:  row = 7; col = 5; break;
+        case VK_ESCAPE:  row = 1; col = 5; break;
+        case VK_BACK:    row = 5; col = 5; break;
+        case VK_DELETE:  row = 5; col = 5; break;
+        case VK_TAB:     row = 4; col = 7; break;
 
         case VK_SHIFT:
         case VK_LSHIFT:
-        case VK_RSHIFT:  row = 4; col = 4; key_name = L"MAJ"; break;
+        case VK_RSHIFT:  row = 4; col = 4; break;
 
         case VK_CONTROL:
         case VK_LCONTROL:
-        case VK_RCONTROL: row = 2; col = 4; key_name = L"CTRL"; break;
+        case VK_RCONTROL: row = 2; col = 4; break;
 
-        /* --- Flèches directionnelles --- */
-        case VK_LEFT:    row = 4; col = 5; key_name = L"GAUCHE"; break;
-        case VK_RIGHT:   row = 4; col = 7; key_name = L"DROITE"; break;
-        case VK_DOWN:    row = 4; col = 6; key_name = L"BAS"; break;
-        case VK_UP:      row = 4; col = 3; key_name = L"HAUT"; break;
+        case VK_LEFT:    row = 4; col = 5; break;
+        case VK_RIGHT:   row = 4; col = 7; break;
+        case VK_DOWN:    row = 4; col = 6; break;
+        case VK_UP:      row = 4; col = 3; break;
 
-        /* --- Chiffres 0-9 (principal et pavé numérique) --- */
-        case '0':
-        case VK_NUMPAD0: row = 7; col = 2; key_name = L"0"; break;
-        case '1':
-        case VK_NUMPAD1: row = 0; col = 5; key_name = L"1"; break;
-        case '2':
-        case VK_NUMPAD2: row = 2; col = 6; key_name = L"2"; break;
+        case '0': case VK_NUMPAD0: row = 7; col = 2; break;
+        case '1': case VK_NUMPAD1: row = 0; col = 5; break;
+        case '2': case VK_NUMPAD2: row = 2; col = 6; break;
         case '3':
-        case VK_NUMPAD3: row = 0; col = 7; key_name = L"3"; break;
-        case '4':
-        case VK_NUMPAD4: row = 2; col = 3; key_name = L"4"; break;
-        case '5':
-        case VK_NUMPAD5: row = 0; col = 2; key_name = L"5"; break;
-        case '6':
-        case VK_NUMPAD6: row = 2; col = 1; key_name = L"6"; break;
-        case '7':
-        case VK_NUMPAD7: row = 0; col = 0; key_name = L"7"; break;
-        case '8':
-        case VK_NUMPAD8: row = 7; col = 0; key_name = L"8"; break;
-        case '9':
-        case VK_NUMPAD9: row = 3; col = 1; key_name = L"9"; break;
+            if (GetKeyState(VK_SHIFT) & 0x8000) {
+                /* Shift + 3 sur AZERTY / Français -> guillemet double " (ligne 3, col 7) + Shift */
+                keyboard_set_key(4, 4, pressed); /* Shift */
+                row = 3; col = 7;
+            } else {
+                row = 0; col = 7;
+            }
+            break;
+        case VK_NUMPAD3: row = 0; col = 7; break;
+        case '4': case VK_NUMPAD4: row = 2; col = 3; break;
+        case '5': case VK_NUMPAD5: row = 0; col = 2; break;
+        case '6': case VK_NUMPAD6: row = 2; col = 1; break;
+        case '7': case VK_NUMPAD7: row = 0; col = 0; break;
+        case '8': case VK_NUMPAD8: row = 7; col = 0; break;
+        case '9': case VK_NUMPAD9: row = 3; col = 1; break;
 
-        /* --- Lettres A-Z --- */
-        case 'A': row = 6; col = 5; key_name = L"A"; break;
-        case 'B': row = 2; col = 2; key_name = L"B"; break;
-        case 'C': row = 2; col = 7; key_name = L"C"; break;
-        case 'D': row = 1; col = 7; key_name = L"D"; break;
-        case 'E': row = 6; col = 3; key_name = L"E"; break;
-        case 'F': row = 1; col = 3; key_name = L"F"; break;
-        case 'G': row = 6; col = 2; key_name = L"G"; break;
-        case 'H': row = 6; col = 1; key_name = L"H"; break;
-        case 'I': row = 5; col = 1; key_name = L"I"; break;
-        case 'J': row = 1; col = 0; key_name = L"J"; break;
-        case 'K': row = 3; col = 0; key_name = L"K"; break;
-        case 'L': row = 7; col = 1; key_name = L"L"; break;
-        case 'M': row = 2; col = 0; key_name = L"M"; break;
-        case 'N': row = 0; col = 1; key_name = L"N"; break;
-        case 'O': row = 5; col = 2; key_name = L"O"; break;
-        case 'P': row = 5; col = 3; key_name = L"P"; break;
-        case 'Q': row = 1; col = 6; key_name = L"Q"; break;
-        case 'R': row = 1; col = 2; key_name = L"R"; break;
-        case 'S': row = 6; col = 6; key_name = L"S"; break;
-        case 'T': row = 1; col = 1; key_name = L"T"; break;
-        case 'U': row = 5; col = 0; key_name = L"U"; break;
-        case 'V': row = 0; col = 3; key_name = L"V"; break;
-        case 'W': row = 6; col = 7; key_name = L"W"; break;
-        case 'X': row = 0; col = 6; key_name = L"X"; break;
-        case 'Y': row = 6; col = 0; key_name = L"Y"; break;
-        case 'Z': row = 2; col = 5; key_name = L"Z"; break;
+        case 'A': row = 6; col = 5; break;
+        case 'B': row = 2; col = 2; break;
+        case 'C': row = 2; col = 7; break;
+        case 'D': row = 1; col = 7; break;
+        case 'E': row = 6; col = 3; break;
+        case 'F': row = 1; col = 3; break;
+        case 'G': row = 6; col = 2; break;
+        case 'H': row = 6; col = 1; break;
+        case 'I': row = 5; col = 1; break;
+        case 'J': row = 1; col = 0; break;
+        case 'K': row = 3; col = 0; break;
+        case 'L': row = 7; col = 1; break;
+        case 'M': row = 2; col = 0; break;
+        case 'N': row = 0; col = 1; break;
+        case 'O': row = 5; col = 2; break;
+        case 'P': row = 5; col = 3; break;
+        case 'Q': row = 1; col = 6; break;
+        case 'R': row = 1; col = 2; break;
+        case 'S': row = 6; col = 6; break;
+        case 'T': row = 1; col = 1; break;
+        case 'U': row = 5; col = 0; break;
+        case 'V': row = 0; col = 3; break;
+        case 'W': row = 6; col = 7; break;
+        case 'X': row = 0; col = 6; break;
+        case 'Y': row = 6; col = 0; break;
+        case 'Z': row = 2; col = 5; break;
 
-        /* --- Ponctuation & Symboles --- */
-        case VK_OEM_COMMA:  row = 4; col = 1; key_name = L","; break;
-        case VK_OEM_PERIOD: row = 4; col = 2; key_name = L"."; break;
-        case VK_DECIMAL:    row = 4; col = 2; key_name = L"."; break;
-        case VK_OEM_1:      row = 3; col = 2; key_name = L";"; break;
-        case VK_OEM_MINUS:  row = 3; col = 3; key_name = L"-"; break;
-        case VK_SUBTRACT:   row = 3; col = 3; key_name = L"-"; break;
-        case VK_OEM_2:      row = 7; col = 3; key_name = L"/"; break;
-        case VK_DIVIDE:     row = 7; col = 3; key_name = L"/"; break;
-        case VK_OEM_PLUS:   row = 7; col = 7; key_name = L"="; break;
-        case VK_ADD:        row = 7; col = 7; key_name = L"+"; break;
-        case VK_MULTIPLY:   row = 7; col = 0; key_name = L"*"; break;
-        case VK_OEM_4:      row = 5; col = 7; key_name = L"["; break;
-        case VK_OEM_6:      row = 5; col = 6; key_name = L"]"; break;
-        case VK_OEM_5:      row = 3; col = 6; key_name = L"\\"; break;
-        case VK_OEM_7:      row = 3; col = 7; key_name = L"'"; break;
-        case VK_OEM_8:      row = 0; col = 5; key_name = L"!"; break;
+        case VK_OEM_COMMA:  row = 4; col = 1; break;
+        case VK_OEM_PERIOD: row = 4; col = 2; break;
+        case VK_DECIMAL:    row = 4; col = 2; break;
+        case VK_OEM_1:      row = 3; col = 2; break;
+        case VK_OEM_MINUS:  row = 3; col = 3; break;
+        case VK_SUBTRACT:   row = 3; col = 3; break;
+        case VK_OEM_2:      row = 7; col = 3; break;
+        case VK_DIVIDE:     row = 7; col = 3; break;
+        case VK_OEM_PLUS:   row = 7; col = 7; break;
+        case VK_ADD:        row = 7; col = 7; break;
+        case VK_MULTIPLY:   row = 7; col = 0; break;
+        case VK_OEM_4:      row = 5; col = 7; break;
+        case VK_OEM_6:      row = 5; col = 6; break;
+        case VK_OEM_5:      row = 3; col = 6; break;
+        case VK_OEM_7:      row = 3; col = 7; break;
+        case VK_OEM_3:      row = 0; col = 5; break;
     }
 
     if (row >= 0 && col >= 0) {
         keyboard_set_key(row, col, pressed);
-        debug_log(L"Touche %ls : VK=0x%02X (%ls) -> Ligne %d, Col %d",
-                  pressed ? L"ENFONCÉE" : L"RELÂCHÉE", vk, key_name, row, col);
+    }
+}
+
+static void keyboard_handle_char(wchar_t ch) {
+    int row = -1, col = -1, shift_needed = 0;
+
+    switch (ch) {
+        case L'a': case L'A': row = 6; col = 5; if (ch == L'A') shift_needed = 1; break;
+        case L'b': case L'B': row = 2; col = 2; if (ch == L'B') shift_needed = 1; break;
+        case L'c': case L'C': row = 2; col = 7; if (ch == L'C') shift_needed = 1; break;
+        case L'd': case L'D': row = 1; col = 7; if (ch == L'D') shift_needed = 1; break;
+        case L'e': case L'E': row = 6; col = 3; if (ch == L'E') shift_needed = 1; break;
+        case L'f': case L'F': row = 1; col = 3; if (ch == L'F') shift_needed = 1; break;
+        case L'g': case L'G': row = 6; col = 2; if (ch == L'G') shift_needed = 1; break;
+        case L'h': case L'H': row = 6; col = 1; if (ch == L'H') shift_needed = 1; break;
+        case L'i': case L'I': row = 5; col = 1; if (ch == L'I') shift_needed = 1; break;
+        case L'j': case L'J': row = 1; col = 0; if (ch == L'J') shift_needed = 1; break;
+        case L'k': case L'K': row = 3; col = 0; if (ch == L'K') shift_needed = 1; break;
+        case L'l': case L'L': row = 7; col = 1; if (ch == L'L') shift_needed = 1; break;
+        case L'm': case L'M': row = 2; col = 0; if (ch == L'M') shift_needed = 1; break;
+        case L'n': case L'N': row = 0; col = 1; if (ch == L'N') shift_needed = 1; break;
+        case L'o': case L'O': row = 5; col = 2; if (ch == L'O') shift_needed = 1; break;
+        case L'p': case L'P': row = 5; col = 3; if (ch == L'P') shift_needed = 1; break;
+        case L'q': case L'Q': row = 1; col = 6; if (ch == L'Q') shift_needed = 1; break;
+        case L'r': case L'R': row = 1; col = 2; if (ch == L'R') shift_needed = 1; break;
+        case L's': case L'S': row = 6; col = 6; if (ch == L'S') shift_needed = 1; break;
+        case L't': case L'T': row = 1; col = 1; if (ch == L'T') shift_needed = 1; break;
+        case L'u': case L'U': row = 5; col = 0; if (ch == L'U') shift_needed = 1; break;
+        case L'v': case L'V': row = 0; col = 3; if (ch == L'V') shift_needed = 1; break;
+        case L'w': case L'W': row = 6; col = 7; if (ch == L'W') shift_needed = 1; break;
+        case L'x': case L'X': row = 0; col = 6; if (ch == L'X') shift_needed = 1; break;
+        case L'y': case L'Y': row = 6; col = 0; if (ch == L'Y') shift_needed = 1; break;
+        case L'z': case L'Z': row = 2; col = 5; if (ch == L'Z') shift_needed = 1; break;
+        case L'0': row = 7; col = 2; break;
+        case L'1': row = 0; col = 5; break;
+        case L'2': row = 2; col = 6; break;
+        case L'3': row = 0; col = 7; break;
+        case L'4': row = 2; col = 3; break;
+        case L'5': row = 0; col = 2; break;
+        case L'6': row = 2; col = 1; break;
+        case L'7': row = 0; col = 0; break;
+        case L'8': row = 7; col = 0; break;
+        case L'9': row = 3; col = 1; break;
+        case L'"': row = 3; col = 7; shift_needed = 1; break;
+        case L' ': row = 4; col = 0; break;
+        case L',': row = 4; col = 1; break;
+        case L'.': row = 4; col = 2; break;
+        case L';': row = 3; col = 2; break;
+        case L'-': row = 3; col = 3; break;
+        case L'/': row = 7; col = 3; break;
+        case L'=': row = 7; col = 7; break;
+    }
+
+    if (row >= 0 && col >= 0) {
+        if (shift_needed) keyboard_set_key(4, 4, true);
+        keyboard_set_key(row, col, true);
+        Sleep(35); /* Brève impulsion pour que l'émulation lise la touche */
+        keyboard_set_key(row, col, false);
+        if (shift_needed) keyboard_set_key(4, 4, false);
     }
 }
 
@@ -1135,10 +1233,10 @@ static void audio_init(HWND hwnd) {
             g_ay.waveHdr[i].dwFlags |= WHDR_DONE;
         }
         g_ay.audio_enabled = true;
-        debug_log(L"Périphérique audio WaveOut initialisé (22050 Hz, 16 bits)");
+        debug_log(L"Audio WaveOut initialisé (22050 Hz, 16 bits)");
     } else {
         g_ay.audio_enabled = false;
-        debug_log(L"Avertissement : Impossible d'initialiser le périphérique audio WaveOut");
+        debug_log(L"Avertissement : Audio WaveOut non disponible");
     }
 }
 
@@ -1234,16 +1332,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (DragQueryFileW(hDrop, 0, filename, MAX_PATH)) {
                 wchar_t *ext = wcsrchr(filename, L'.');
                 if (ext && (_wcsicmp(ext, L".tap") == 0)) {
-                    debug_log(L"Fichier .TAP déposé par l'utilisateur : %ls", filename);
+                    debug_log(L"Fichier .TAP déposé : %ls", filename);
                     oric_inject_tap_and_run(filename);
                     wchar_t title[512];
                     wchar_t wname[32];
                     ansi_to_wide(g_tape.current_name, wname, 32);
-                    swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls] - Glisser un autre .TAP pour changer",
-                             g_tape.current_name[0] ? wname : L"Inconnu");
+                    swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
                     SetWindowTextW(hwnd, title);
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
-                    debug_log(L"Fichier .ROM déposé par l'utilisateur : %ls", filename);
+                    debug_log(L"Fichier .ROM déposé : %ls", filename);
                     oric_load_rom(filename);
                     cpu_reset();
                     via_reset();
@@ -1269,7 +1366,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             keyboard_handle_vk((UINT)wParam, true);
             if (wParam == VK_F5) {
-                debug_log(L"Réinitialisation matérielle (Touche F5 enfoncée)");
+                debug_log(L"Réinitialisation matérielle (Reset F5)");
                 cpu_reset();
                 via_reset();
                 ay_reset();
@@ -1277,16 +1374,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
-                    L"- Glisser-déposer un fichier .TAP ou .ROM sur la fenêtre\n"
-                    L"- Alt+Entrée : Basculer le mode plein écran\n"
-                    L"- F5 : Réinitialiser la machine (Reset matériel 6502)\n"
-                    L"- Clavier : Support AZERTY / QWERTY complet\n",
+                    L"- Glisser-déposer un fichier .TAP ou .ROM\n"
+                    L"- Alt+Entrée : Plein écran / Mode fenêtré\n"
+                    L"- F5 : Réinitialisation de la machine\n"
+                    L"- Support clavier AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
             }
             return 0;
 
         case WM_KEYUP:
             keyboard_handle_vk((UINT)wParam, false);
+            return 0;
+
+        case WM_CHAR:
+            keyboard_handle_char((wchar_t)wParam);
             return 0;
 
         case WM_KILLFOCUS:
@@ -1320,7 +1421,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 /* ============================================================================
- * INITIALISATION PRINCIPALE ET POINT D'ENTRÉE UNICODE (wWinMain / wmain)
+ * POINT D'ENTRÉE UNICODE ET EXÉCUTION
  * ============================================================================ */
 static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdShow) {
     debug_init();
@@ -1337,21 +1438,27 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         }
 
         wchar_t *ext = wcsrchr(path, L'.');
-        if (ext && _wcsicmp(ext, L".rom") == 0) {
-            oric_load_rom(path);
-            if (g_rom_loaded) rom_explicitly_loaded = true;
+        if (ext) {
+            if (_wcsicmp(ext, L".rom") == 0) {
+                oric_load_rom(path);
+                if (g_rom_loaded) rom_explicitly_loaded = true;
+            }
         }
     }
 
     if (!rom_explicitly_loaded) {
-        if (!g_rom_loaded) oric_load_rom(L"atmos.rom");
+        oric_load_rom(L"atmos.rom");
     }
 
     if (!g_rom_loaded) {
-        debug_log(L"Avertissement : Fichier ROM introuvable dans le répertoire courant");
+        debug_log(L"Avertissement : atmos.rom introuvable, tentative avec 110fr.rom");
+        oric_load_rom(L"110fr.rom");
+    }
+
+    if (!g_rom_loaded) {
+        debug_log(L"Erreur : Aucune ROM trouvée dans le répertoire courant !");
         MessageBoxW(NULL,
-            L"Impossible de trouver '110fr.rom' dans le dossier courant.\n"
-            L"Veuillez vous assurer que '110fr.rom' est situé à côté de l'exécutable.",
+            L"Impossible de trouver 'atmos.rom' ou '110fr.rom' dans le dossier courant.",
             L"ROM non trouvée", MB_OK | MB_ICONWARNING);
     }
 
@@ -1369,7 +1476,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
 
     if (!RegisterClassW(&wc)) {
-        debug_log(L"Erreur : Impossible d'enregistrer la classe WNDCLASSW");
+        debug_log(L"Erreur : Échec de l'enregistrement de la classe WNDCLASSW");
         return 1;
     }
 
@@ -1387,7 +1494,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     );
 
     if (!hwnd) {
-        debug_log(L"Erreur : Impossible de créer la fenêtre principale Win32");
+        debug_log(L"Erreur : Échec de création de la fenêtre Win32");
         return 1;
     }
 
@@ -1395,6 +1502,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     UpdateWindow(hwnd);
     debug_log(L"Fenêtre d'émulation ouverte (%dx%d)", rc.right - rc.left, rc.bottom - rc.top);
 
+    /* Charger un fichier TAP passé en argument s'il existe */
     if (cmdLine && cmdLine[0] != 0) {
         wchar_t path[MAX_PATH];
         wcsncpy(path, cmdLine, MAX_PATH - 1);
