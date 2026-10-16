@@ -256,6 +256,7 @@ static void debug_init(void) {
     _wfreopen_s(&fpOut, L"CONOUT$", L"w", stdout);
     _wfreopen_s(&fpErr, L"CONOUT$", L"w", stderr);
     SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
     SetConsoleTitleW(L"Oric Atmos Win32 - Console de Débogage");
 
     wprintf(L"===============================================================\n");
@@ -877,6 +878,19 @@ static void oric_load_rom(const wchar_t *path) {
 /* ============================================================================
  * CHARGEMENT .TAP ET AUTO-RUN (TURBO TAPE)
  * ============================================================================ */
+static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
+    if (!src || !dst || max_len <= 0) return;
+    int len = MultiByteToWideChar(CP_ACP, 0, src, -1, dst, max_len);
+    if (len <= 0) {
+        int i = 0;
+        while (src[i] && i < max_len - 1) {
+            dst[i] = (wchar_t)(unsigned char)src[i];
+            i++;
+        }
+        dst[i] = 0;
+    }
+}
+
 static void oric_inject_tap_and_run(const wchar_t *filename) {
     FILE *f = _wfopen(filename, L"rb");
     if (!f) {
@@ -945,8 +959,11 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
             data_len = end_addr - start_addr + 1;
         }
 
-        debug_log(L"Bloc TAP #%d : Nom=\"%hs\", Type=0x%02X (%ls), Début=0x%04X, Fin=0x%04X, Longueur=%u, Autorun=0x%02X",
-                  blocks_loaded + 1, block_name, file_type,
+        wchar_t wblock_name[32];
+        ansi_to_wide(block_name, wblock_name, 32);
+
+        debug_log(L"Bloc TAP #%d : Nom=\"%ls\", Type=0x%02X (%ls), Début=0x%04X, Fin=0x%04X, Longueur=%u, Autorun=0x%02X",
+                  blocks_loaded + 1, wblock_name, file_type,
                   (file_type & 0x80) ? L"Code Machine" : L"BASIC",
                   start_addr, end_addr, (unsigned)data_len, autorun);
 
@@ -1165,6 +1182,34 @@ static void audio_shutdown(void) {
     }
 }
 
+static bool g_fullscreen = false;
+static WINDOWPLACEMENT g_wpPrev = { sizeof(g_wpPrev) };
+
+static void toggle_fullscreen(HWND hwnd) {
+    DWORD dwStyle = GetWindowLong(hwnd, GWL_STYLE);
+    if (g_fullscreen) {
+        SetWindowLong(hwnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd, &g_wpPrev);
+        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        g_fullscreen = false;
+        debug_log(L"Mode fenêtré restauré");
+    } else {
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetWindowPlacement(hwnd, &g_wpPrev) &&
+            GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+            SetWindowLong(hwnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW);
+            SetWindowPos(hwnd, HWND_TOP,
+                mi.rcMonitor.left, mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left,
+                mi.rcMonitor.bottom - mi.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+            g_fullscreen = true;
+            debug_log(L"Mode plein écran activé (Alt+Entrée)");
+        }
+    }
+}
+
 /* ============================================================================
  * FENÊTRE PRINCIPALE WIN32
  * ============================================================================ */
@@ -1192,8 +1237,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     debug_log(L"Fichier .TAP déposé par l'utilisateur : %ls", filename);
                     oric_inject_tap_and_run(filename);
                     wchar_t title[512];
-                    swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %hs] - Glisser un autre .TAP pour changer",
-                             g_tape.current_name[0] ? g_tape.current_name : "Inconnu");
+                    wchar_t wname[32];
+                    ansi_to_wide(g_tape.current_name, wname, 32);
+                    swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls] - Glisser un autre .TAP pour changer",
+                             g_tape.current_name[0] ? wname : L"Inconnu");
                     SetWindowTextW(hwnd, title);
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
                     debug_log(L"Fichier .ROM déposé par l'utilisateur : %ls", filename);
@@ -1208,7 +1255,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
+        case WM_SYSKEYDOWN:
+            if (wParam == VK_RETURN) {
+                toggle_fullscreen(hwnd);
+                return 0;
+            }
+            break;
+
         case WM_KEYDOWN:
+            if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) {
+                toggle_fullscreen(hwnd);
+                return 0;
+            }
             keyboard_handle_vk((UINT)wParam, true);
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Touche F5 enfoncée)");
@@ -1219,8 +1277,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
-                    L"- Glisser-déposer un fichier .TAP sur la fenêtre pour lancer un jeu\n"
-                    L"- Glisser-déposer un fichier .ROM pour charger une autre ROM\n"
+                    L"- Glisser-déposer un fichier .TAP ou .ROM sur la fenêtre\n"
+                    L"- Alt+Entrée : Basculer le mode plein écran\n"
                     L"- F5 : Réinitialiser la machine (Reset matériel 6502)\n"
                     L"- Clavier : Support AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
@@ -1267,9 +1325,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdShow) {
     debug_init();
 
-    oric_load_rom(L"110fr.rom");
-    if (!g_rom_loaded) oric_load_rom(L"atmos.rom");
-    if (!g_rom_loaded) oric_load_rom(L"stock_basic11b.rom");
+    bool rom_explicitly_loaded = false;
+    if (cmdLine && cmdLine[0] != 0) {
+        wchar_t path[MAX_PATH];
+        wcsncpy(path, cmdLine, MAX_PATH - 1);
+        path[MAX_PATH - 1] = 0;
+        if (path[0] == L'\"') {
+            size_t l = wcslen(path);
+            if (path[l - 1] == L'\"') path[l - 1] = 0;
+            wmemmove(path, path + 1, l);
+        }
+
+        wchar_t *ext = wcsrchr(path, L'.');
+        if (ext && _wcsicmp(ext, L".rom") == 0) {
+            oric_load_rom(path);
+            if (g_rom_loaded) rom_explicitly_loaded = true;
+        }
+    }
+
+    if (!rom_explicitly_loaded) {
+        if (!g_rom_loaded) oric_load_rom(L"atmos.rom");
+    }
 
     if (!g_rom_loaded) {
         debug_log(L"Avertissement : Fichier ROM introuvable dans le répertoire courant");
@@ -1303,7 +1379,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     HWND hwnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
         L"OricAtmosWin32",
-        L"Oric Atmos (MinGW64 / C Unicode / GDI) - Glissez un fichier .TAP sur la fenêtre",
+        L"Oric Atmos (MinGW64 / C Unicode / GDI) - Alt+Entrée Plein écran",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         rc.right - rc.left, rc.bottom - rc.top,
@@ -1328,7 +1404,16 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
             if (path[l - 1] == L'\"') path[l - 1] = 0;
             wmemmove(path, path + 1, l);
         }
-        oric_inject_tap_and_run(path);
+
+        wchar_t *ext = wcsrchr(path, L'.');
+        if (ext && _wcsicmp(ext, L".tap") == 0) {
+            oric_inject_tap_and_run(path);
+            wchar_t title[512];
+            wchar_t wname[32];
+            ansi_to_wide(g_tape.current_name, wname, 32);
+            swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
+            SetWindowTextW(hwnd, title);
+        }
     }
 
     timeBeginPeriod(1);
