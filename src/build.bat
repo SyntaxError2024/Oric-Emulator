@@ -7,6 +7,8 @@ echo.
 
 set app="oric_atmos.exe"
 
+taskkill /F /im %app%
+
 del %app%
 
 gcc -O3 oric_win32.c -o %app% -municode -lgdi32 -lwinmm -lshell32
