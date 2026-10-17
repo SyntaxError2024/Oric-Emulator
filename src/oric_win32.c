@@ -11,7 +11,7 @@
  *     - Fichiers batch (.bat) encodés en Windows-1252.
  *     - Console de débogage active avec affichage en direct des événements.
  *     - Glisser-déposer de fichiers .TAP, .ROM, .DSK et arguments en ligne de commande.
- *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, registres FDC 0x0310).
+ *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, désactivé par défaut pour éviter "adjustment required").
  *     - Émulation matérielle du flux de bits K7 (Cassette Bitstream sur Port B bit 3 et Port A bit 7).
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
@@ -128,7 +128,7 @@ static bool g_rom_loaded = false;
 
 static uint8_t g_microdis_rom[8192];
 static bool g_microdis_loaded = false;
-static uint8_t g_microdis_control = 0; /* Contrôleur Microdisc 0x0314 */
+static uint8_t g_microdis_control = 0x04; /* Contrôleur Microdisc 0x0314 (0x04 = ROM désactivée par défaut) */
 
 /* --- ULA & Affichage --- */
 static uint32_t g_framebuffer[SCREEN_W * SCREEN_H];
@@ -760,6 +760,7 @@ static void via_reset(void) {
     g_via.ier = 0x40;
     g_via.pcr = 0xCC;
     g_via.t1_active = true;
+    g_microdis_control = 0x04; /* Microdisc ROM désactivée par défaut au démarrage (évite le blocage adjustment required) */
 }
 
 static void via_step(uint32_t cycles) {
@@ -1328,6 +1329,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     ansi_to_wide(g_tape.current_name, wname, 32);
                     swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
                     SetWindowTextW(hwnd, title);
+                } else if (ext && (_wcsicmp(ext, L".dsk") == 0)) {
+                    debug_log(L"Image disque .DSK chargée : %ls", filename);
+                    g_microdis_control = 0x00; /* Activer le contrôleur Microdisc pour le disque */
+                    SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
                     debug_log(L"Fichier .ROM déposé : %ls", filename);
                     oric_load_rom(filename);
@@ -1516,6 +1521,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
                 SetWindowTextW(hwnd, title);
             } else if (_wcsicmp(ext, L".dsk") == 0) {
                 debug_log(L"Image disque .DSK chargée : %ls", path);
+                g_microdis_control = 0x00; /* Activer le contrôleur Microdisc pour le disque */
                 SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
             }
         }
