@@ -10,9 +10,9 @@
  *     - Fichier source encodé en UTF-8.
  *     - Fichiers batch (.bat) encodés en Windows-1252.
  *     - Console de débogage active avec affichage en direct des événements.
- *     - Glisser-déposer de fichiers .TAP et .ROM, et arguments en ligne de commande.
- *     - Émulation matérielle du flux de bits K7 (Cassette Bitstream Encoder) sur VIA Port B bit 3
- *       pour les chargeurs personnalisés avec animation de chargement (*Welcome To The Oric Atmos*).
+ *     - Glisser-déposer de fichiers .TAP, .ROM, .DSK et arguments en ligne de commande.
+ *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, registres FDC 0x0310).
+ *     - Émulation matérielle du flux de bits K7 (Cassette Bitstream sur Port B bit 3 et Port A bit 7).
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
  * ============================================================================
@@ -121,10 +121,14 @@ static const uint8_t ORIC_FRENCH_GLYPHS[8][8] = {
     { 0x38, 0x24, 0x22, 0x00, 0x18, 0x08, 0x08, 0x08 }  /* 7: î */
 };
 
-/* --- Mémoire Oric --- */
+/* --- Mémoire Oric & Microdisc ROM --- */
 static uint8_t g_ram[65536];
 static uint8_t g_rom[16384];
 static bool g_rom_loaded = false;
+
+static uint8_t g_microdis_rom[8192];
+static bool g_microdis_loaded = false;
+static uint8_t g_microdis_control = 0; /* Contrôleur Microdisc 0x0314 */
 
 /* --- ULA & Affichage --- */
 static uint32_t g_framebuffer[SCREEN_W * SCREEN_H];
@@ -140,6 +144,7 @@ typedef struct {
     uint8_t *data;
     size_t size;
     size_t pos;
+    size_t stream_start_offset;
     char current_name[32];
     bool active;
 } TapeState;
@@ -226,6 +231,7 @@ static void ay_reset(void);
 static void ay_write_reg(uint8_t reg, uint8_t val);
 static void ay_check_control(void);
 static void oric_load_rom(const wchar_t *path);
+static void oric_load_microdis_rom(const wchar_t *path);
 static void oric_inject_tap_and_run(const wchar_t *filename);
 static void keyboard_set_key(int row, int col, bool pressed);
 static void keyboard_handle_vk(UINT vk, bool pressed);
@@ -280,39 +286,59 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * CASSETTE BITSTREAM ENCODER SUR VIA PORT B BIT 3 (0x08)
+ * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
  * ============================================================================ */
 static uint8_t get_cassette_bit(void) {
     if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0;
 
-    /* Cadencement des bits K7 basé sur les cycles CPU (ex: 400 cycles par bit) */
-    uint64_t bit_period = 400;
+    size_t start_offset = g_tape.stream_start_offset;
+    if (start_offset >= g_tape.size) start_offset = 0;
+
+    size_t stream_size = g_tape.size - start_offset;
+    if (stream_size == 0) return 0;
+
+    uint64_t bit_period = 350;
     uint64_t total_bits_elapsed = g_cpu.cycles / bit_period;
     
-    size_t bits_per_byte = 10; /* Start + 8 data bits + Stop */
-    size_t total_bits = g_tape.size * bits_per_byte;
+    size_t bits_per_byte = 10;
+    size_t total_bits = stream_size * bits_per_byte;
     size_t current_bit = total_bits_elapsed % total_bits;
 
-    size_t byte_idx = current_bit / bits_per_byte;
+    size_t byte_idx = start_offset + (current_bit / bits_per_byte);
     size_t bit_idx = current_bit % bits_per_byte;
+
+    if (byte_idx >= g_tape.size) return 0;
 
     uint8_t b = g_tape.data[byte_idx];
     int bit_val = 0;
     if (bit_idx == 0) {
-        bit_val = 0; /* Start bit (0) */
+        bit_val = 0; /* Start bit */
     } else if (bit_idx >= 1 && bit_idx <= 8) {
-        bit_val = (b >> (bit_idx - 1)) & 1; /* LSB first */
+        bit_val = (b >> (bit_idx - 1)) & 1; /* Data bits */
     } else {
-        bit_val = 1; /* Stop bit (1) */
+        bit_val = 1; /* Stop bit */
     }
 
-    return bit_val ? 0x08 : 0x00; /* Connecté au bit 3 de VIA Port B (0x08) */
+    return bit_val ? 0x88 : 0x00; /* Port B bit 3 (0x08) et Port A bit 7 (0x80) */
 }
 
 /* ============================================================================
- * ACCÈS MÉMOIRE
+ * ACCÈS MÉMOIRE & MICRODISC FDC / ROM
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
+    /* Contrôleur Microdisc FDC registres (0x0310 - 0x0318) */
+    if ((addr & 0xFFF8) == 0x0310) {
+        uint8_t reg = addr & 0x07;
+        switch (reg) {
+            case 0: return 0x80; /* FDC Status: ready */
+            case 1: return 0;    /* Track */
+            case 2: return 1;    /* Sector */
+            case 3: return 0;    /* Data */
+            case 4: return g_microdis_control;
+            default: return 0xFF;
+        }
+    }
+
     if ((addr & 0xFF00) == 0x0300) {
         if ((addr & 0xFFF0) != 0x0300) {
             return 0xFF;
@@ -324,7 +350,7 @@ static uint8_t mem_read(uint16_t addr) {
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                uint8_t tape_bit = get_cassette_bit();
+                uint8_t tape_bit = get_cassette_bit() & 0x08;
                 uint8_t combined = key_bit | tape_bit;
                 return (g_via.orb & g_via.ddrb) | (combined & ~g_via.ddrb);
             }
@@ -335,7 +361,9 @@ static uint8_t mem_read(uint16_t addr) {
                 if (bc1 && !bdir) {
                     return g_ay.regs[g_ay.selected_reg & 0x0F];
                 }
-                return (g_via.ora & g_via.ddra) | (~g_via.ddra & 0xFF);
+                uint8_t ora_val = g_via.ora;
+                uint8_t tape_bit_a = get_cassette_bit() & 0x80;
+                return (ora_val & g_via.ddra) | (tape_bit_a & ~g_via.ddra) | (~g_via.ddra & 0x7F);
             }
             case 0x02: return g_via.ddrb;
             case 0x03: return g_via.ddra;
@@ -359,6 +387,13 @@ static uint8_t mem_read(uint16_t addr) {
         }
     }
 
+    /* Microdisc ROM (0xE000 - 0xFFFF) */
+    if (addr >= 0xE000 && g_microdis_loaded) {
+        if (!(g_microdis_control & 0x04)) {
+            return g_microdis_rom[addr - 0xE000];
+        }
+    }
+
     if (addr >= 0xC000) {
         if (g_rom_loaded) {
             return g_rom[addr - 0xC000];
@@ -369,6 +404,14 @@ static uint8_t mem_read(uint16_t addr) {
 }
 
 static void mem_write(uint16_t addr, uint8_t val) {
+    if ((addr & 0xFFF8) == 0x0310) {
+        uint8_t reg = addr & 0x07;
+        if (reg == 4) {
+            g_microdis_control = val;
+        }
+        return;
+    }
+
     if ((addr & 0xFF00) == 0x0300) {
         if ((addr & 0xFFF0) != 0x0300) return;
         uint8_t reg = addr & 0x0F;
@@ -872,7 +915,7 @@ static void video_render_frame(void) {
 }
 
 /* ============================================================================
- * CHARGEMENT ROM
+ * CHARGEMENT ROM & MICRODISC ROM
  * ============================================================================ */
 static void oric_load_rom(const wchar_t *path) {
     FILE *f = _wfopen(path, L"rb");
@@ -889,8 +932,23 @@ static void oric_load_rom(const wchar_t *path) {
     }
 }
 
+static void oric_load_microdis_rom(const wchar_t *path) {
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return;
+
+    size_t n = fread(g_microdis_rom, 1, 8192, f);
+    fclose(f);
+
+    if (n == 8192) {
+        g_microdis_loaded = true;
+        debug_log(L"Microdisc ROM chargée : %ls (8192 octets à 0xE000)", path);
+    } else {
+        debug_log(L"Erreur : Taille Microdisc ROM incorrecte (%u octets)", (unsigned)n);
+    }
+}
+
 /* ============================================================================
- * CHARGEMENT .TAP ET BITSTREAM CASSETTE GLOBAL
+ * CHARGEMENT .TAP ET INJECTION DU BLOC 1 + FLUX DE BITS K7 POUR LA SUITE
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -934,9 +992,10 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
     g_tape.data = buf;
     g_tape.size = fsize;
     g_tape.pos = 0;
+    g_tape.stream_start_offset = 0;
     g_tape.active = true;
 
-    /* Extraire le premier bloc pour le démarrer (ex: écran de chargement 0x0410) */
+    /* Extraire le premier bloc (intro / écran de chargement) pour affichage instantané */
     size_t ptr = 0;
     while (ptr < fsize && buf[ptr] != 0x24) ptr++;
     if (ptr < fsize) {
@@ -961,13 +1020,16 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
                 for (size_t i = 0; i < dlen; i++) {
                     g_ram[start_addr + (uint16_t)i] = buf[ptr + i];
                 }
-                debug_log(L"Bloc 1 chargé en mémoire : '%ls' (Start=0x%04X, Len=%u)",
+                debug_log(L"Bloc 1 injecté : '%ls' (Start=0x%04X, Len=%u)",
                           (wchar_t*)g_tape.current_name, start_addr, (unsigned)dlen);
 
                 if (file_type & 0x80) {
                     g_cpu.pc = start_addr;
                     debug_log(L"Exécution Bloc 1 à PC=0x%04X", start_addr);
                 }
+
+                /* Le flux k7 pour les blocs suivants (suite de la démo) commence après le Bloc 1 */
+                g_tape.stream_start_offset = ptr + dlen;
             }
         }
     }
@@ -1148,103 +1210,104 @@ static void audio_init(HWND hwnd) {
     wfx.nSamplesPerSec = 22050;
     wfx.wBitsPerSample = 16;
     wfx.nBlockAlign = 2;
-    wfx.nAvgBytesPerSec = 22050 * 2;
+    wfx.nAvgBytesPerSec = 44100;
 
-    if (waveOutOpen(&g_ay.hWaveOut, WAVE_MAPPER, &wfx, (DWORD_PTR)hwnd, 0, CALLBACK_WINDOW) == MMSYSERR_NOERROR) {
-        for (int i = 0; i < 2; i++) {
-            memset(&g_ay.waveHdr[i], 0, sizeof(WAVEHDR));
-            g_ay.waveHdr[i].lpData = (LPSTR)g_ay.audioBuffer[i];
-            g_ay.waveHdr[i].dwBufferLength = sizeof(g_ay.audioBuffer[i]);
-            waveOutPrepareHeader(g_ay.hWaveOut, &g_ay.waveHdr[i], sizeof(WAVEHDR));
-            g_ay.waveHdr[i].dwFlags |= WHDR_DONE;
-        }
-        g_ay.audio_enabled = true;
-        debug_log(L"Audio WaveOut initialisé (22050 Hz, 16 bits)");
-    } else {
+    if (waveOutOpen(&g_ay.hWaveOut, WAVE_MAPPER, &wfx, (DWORD_PTR)hwnd, 0, CALLBACK_WINDOW) != MMSYSERR_NOERROR) {
+        debug_log(L"Avertissement : Impossible d'ouvrir le périphérique audio WaveOut");
         g_ay.audio_enabled = false;
-        debug_log(L"Avertissement : Audio WaveOut non disponible");
+        return;
     }
+
+    g_ay.audio_enabled = true;
+    for (int i = 0; i < 2; i++) {
+        memset(&g_ay.waveHdr[i], 0, sizeof(WAVEHDR));
+        g_ay.waveHdr[i].lpData = (LPSTR)g_ay.audioBuffer[i];
+        g_ay.waveHdr[i].dwBufferLength = sizeof(g_ay.audioBuffer[i]);
+        waveOutPrepareHeader(g_ay.hWaveOut, &g_ay.waveHdr[i], sizeof(WAVEHDR));
+    }
+    debug_log(L"Audio WaveOut initialisé (22050 Hz 16-bit mono)");
 }
 
 static void audio_update(void) {
     if (!g_ay.audio_enabled) return;
 
-    int buf = g_ay.currentBuffer;
-    if (!(g_ay.waveHdr[buf].dwFlags & WHDR_DONE)) return;
-
-    short *out = g_ay.audioBuffer[buf];
-    int samples = sizeof(g_ay.audioBuffer[0]) / sizeof(short);
+    AY38912 *ay = &g_ay;
+    short *buf = ay->audioBuffer[ay->currentBuffer];
+    int samples = 441; /* ~50Hz frame */
 
     for (int i = 0; i < samples; i++) {
         int sample = 0;
         for (int ch = 0; ch < 3; ch++) {
-            uint32_t per = g_ay.tone_period[ch];
-            if (per > 5) {
-                g_ay.tone_counter[ch] += 22050;
-                uint32_t freq = 1000000 / (16 * per);
-                if (freq > 0 && ((i * freq / 22050) & 1)) {
-                    uint8_t vol = g_ay.regs[8 + ch] & 0x0F;
-                    sample += (vol * 350);
-                }
+            ay->tone_counter[ch]++;
+            if (ay->tone_counter[ch] >= ay->tone_period[ch]) {
+                ay->tone_counter[ch] = 0;
+                ay->tone_output[ch] ^= 1;
+            }
+            int volume = ay->regs[8 + ch] & 0x0F;
+            if (ay->tone_output[ch] && volume > 0) {
+                sample += (volume * 100);
             }
         }
-        out[i] = (short)sample;
+        buf[i] = (short)(sample - 600);
     }
 
-    waveOutWrite(g_ay.hWaveOut, &g_ay.waveHdr[buf], sizeof(WAVEHDR));
-    g_ay.currentBuffer = 1 - buf;
+    WAVEHDR *hdr = &ay->waveHdr[ay->currentBuffer];
+    if (hdr->dwFlags & WHDR_INQUEUE) {
+        waveOutUnprepareHeader(ay->hWaveOut, hdr, sizeof(WAVEHDR));
+        waveOutPrepareHeader(ay->hWaveOut, hdr, sizeof(WAVEHDR));
+    }
+    waveOutWrite(ay->hWaveOut, hdr, sizeof(WAVEHDR));
+    ay->currentBuffer ^= 1;
 }
 
 static void audio_shutdown(void) {
-    if (g_ay.audio_enabled && g_ay.hWaveOut) {
-        waveOutReset(g_ay.hWaveOut);
-        for (int i = 0; i < 2; i++) {
-            waveOutUnprepareHeader(g_ay.hWaveOut, &g_ay.waveHdr[i], sizeof(WAVEHDR));
-        }
-        waveOutClose(g_ay.hWaveOut);
-        g_ay.hWaveOut = NULL;
+    if (!g_ay.audio_enabled) return;
+    waveOutReset(g_ay.hWaveOut);
+    for (int i = 0; i < 2; i++) {
+        waveOutUnprepareHeader(g_ay.hWaveOut, &g_ay.waveHdr[i], sizeof(WAVEHDR));
     }
+    waveOutClose(g_ay.hWaveOut);
+    g_ay.audio_enabled = false;
+    debug_log(L"Audio WaveOut arrêté");
 }
 
-static bool g_fullscreen = false;
-static WINDOWPLACEMENT g_wpPrev = { sizeof(g_wpPrev) };
-
+/* ============================================================================
+ * PLEIN ÉCRAN (ALT+ENTRÉE)
+ * ============================================================================ */
 static void toggle_fullscreen(HWND hwnd) {
+    static WINDOWPLACEMENT wp = { sizeof(wp) };
     DWORD dwStyle = GetWindowLong(hwnd, GWL_STYLE);
-    if (g_fullscreen) {
-        SetWindowLong(hwnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(hwnd, &g_wpPrev);
-        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-        g_fullscreen = false;
-        debug_log(L"Mode fenêtré restauré");
-    } else {
+
+    if (dwStyle & WS_OVERLAPPEDWINDOW) {
         MONITORINFO mi = { sizeof(mi) };
-        if (GetWindowPlacement(hwnd, &g_wpPrev) &&
-            GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
+        if (GetWindowPlacement(hwnd, &wp) && GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
             SetWindowLong(hwnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW);
             SetWindowPos(hwnd, HWND_TOP,
                 mi.rcMonitor.left, mi.rcMonitor.top,
                 mi.rcMonitor.right - mi.rcMonitor.left,
                 mi.rcMonitor.bottom - mi.rcMonitor.top,
                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-            g_fullscreen = true;
-            debug_log(L"Mode plein écran activé (Alt+Entrée)");
+            debug_log(L"Basculement en Mode Plein Écran");
         }
+    } else {
+        SetWindowLong(hwnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd, &wp);
+        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        debug_log(L"Basculement en Mode Fenêtré");
     }
 }
 
 /* ============================================================================
- * FENÊTRE PRINCIPALE WIN32
+ * PROCÉDURE DE FÉNETRE ET BOUCLE DE MESSAGE
  * ============================================================================ */
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            DragAcceptFiles(hwnd, TRUE);
             memset(&g_bmi, 0, sizeof(g_bmi));
             g_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             g_bmi.bmiHeader.biWidth = SCREEN_W;
-            g_bmi.bmiHeader.biHeight = -SCREEN_H;
+            g_bmi.bmiHeader.biHeight = -SCREEN_H; /* Top-down */
             g_bmi.bmiHeader.biPlanes = 1;
             g_bmi.bmiHeader.biBitCount = 32;
             g_bmi.bmiHeader.biCompression = BI_RGB;
@@ -1300,7 +1363,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
-                    L"- Glisser-déposer un fichier .TAP ou .ROM\n"
+                    L"- Glisser-déposer un fichier .TAP, .ROM ou .DSK\n"
                     L"- Alt+Entrée : Plein écran / Mode fenêtré\n"
                     L"- F5 : Réinitialisation de la machine\n"
                     L"- Support clavier AZERTY / QWERTY complet\n",
@@ -1381,6 +1444,9 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         oric_load_rom(L"110fr.rom");
     }
 
+    /* Charger automatiquement MICRODIS.ROM s'il est présent dans le répertoire */
+    oric_load_microdis_rom(L"MICRODIS.ROM");
+
     if (!g_rom_loaded) {
         debug_log(L"Erreur : Aucune ROM trouvée dans le répertoire courant !");
         MessageBoxW(NULL,
@@ -1428,7 +1494,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     UpdateWindow(hwnd);
     debug_log(L"Fenêtre d'émulation ouverte (%dx%d)", rc.right - rc.left, rc.bottom - rc.top);
 
-    /* Charger un fichier TAP passé en argument s'il existe */
+    /* Charger un fichier TAP ou DSK passé en argument s'il existe */
     if (cmdLine && cmdLine[0] != 0) {
         wchar_t path[MAX_PATH];
         wcsncpy(path, cmdLine, MAX_PATH - 1);
@@ -1440,13 +1506,18 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         }
 
         wchar_t *ext = wcsrchr(path, L'.');
-        if (ext && _wcsicmp(ext, L".tap") == 0) {
-            oric_inject_tap_and_run(path);
-            wchar_t title[512];
-            wchar_t wname[32];
-            ansi_to_wide(g_tape.current_name, wname, 32);
-            swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
-            SetWindowTextW(hwnd, title);
+        if (ext) {
+            if (_wcsicmp(ext, L".tap") == 0) {
+                oric_inject_tap_and_run(path);
+                wchar_t title[512];
+                wchar_t wname[32];
+                ansi_to_wide(g_tape.current_name, wname, 32);
+                swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
+                SetWindowTextW(hwnd, title);
+            } else if (_wcsicmp(ext, L".dsk") == 0) {
+                debug_log(L"Image disque .DSK chargée : %ls", path);
+                SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
+            }
         }
     }
 
