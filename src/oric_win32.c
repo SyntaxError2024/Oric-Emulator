@@ -11,7 +11,7 @@
  *     - Fichiers batch (.bat) encodés en Windows-1252.
  *     - Console de débogage active avec affichage en direct des événements.
  *     - Glisser-déposer de fichiers .TAP et .ROM, et arguments en ligne de commande.
- *     - Chargement K7 multi-blocs (Turbo Tape / Tape Trap) pour démos et jeux.
+ *     - Chargement K7 multi-blocs intelligent pour démos et jeux (*Welcome To The Oric Atmos*).
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
  * ============================================================================
@@ -134,7 +134,7 @@ static int g_frame_counter = 0;
 /* --- Matrice Clavier Oric (8x8) --- */
 static uint8_t g_key_matrix[8];
 
-/* --- Structure Bloc TAP pour Chargement K7 Multi-blocs (Turbo Tape Trap) --- */
+/* --- Structure Bloc TAP pour Chargement K7 Multi-blocs (Turbo Tape) --- */
 typedef struct {
     uint8_t file_type;
     uint8_t autorun;
@@ -151,6 +151,7 @@ typedef struct {
     int current_block_index;
     char current_name[32];
     bool active;
+    bool block2_loaded;
 } TapeState;
 
 static TapeState g_tape;
@@ -289,7 +290,7 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * ACCÈS MÉMOIRE & TAPE TRAP (TURBO TAPE)
+ * ACCÈS MÉMOIRE & TURBO TAPE AUTO-LOADER
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
     if ((addr & 0xFF00) == 0x0300) {
@@ -393,7 +394,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
 }
 
 /* ============================================================================
- * ÉMULATION CPU 6502 & TAPE TRAP HOOK
+ * ÉMULATION CPU 6502 & TURBO TAPE TIMED LOADER
  * ============================================================================ */
 static void cpu_reset(void) {
     g_cpu.a = 0;
@@ -423,48 +424,28 @@ static inline uint8_t cpu_pop(void) {
     return mem_read(0x0100 + (++g_cpu.sp & 0xFF));
 }
 
-/* Interception des routines ROM de chargement K7 (Turbo Tape Trap) */
-static void check_tape_trap(void) {
-    if (!g_tape.active) return;
+static void check_tape_autoload(void) {
+    if (!g_tape.active || g_tape.block2_loaded || g_tape.num_blocks <= 1) return;
 
-    /* Point d'entrée standard ROM Oric pour le chargement K7 (ex: F144 ou similaire) */
-    if (g_cpu.pc == 0xF144 || g_cpu.pc == 0xF21C || g_cpu.pc == 0xF200) {
-        if (g_tape.current_block_index < g_tape.num_blocks) {
-            TapBlock *blk = &g_tape.blocks[g_tape.current_block_index];
-            debug_log(L"Tape Trap : Chargement automatique du bloc #%d ('%hs', Start=0x%04X, End=0x%04X, Len=%u)",
-                      g_tape.current_block_index + 1, blk->name, blk->start_addr, blk->end_addr, (unsigned)blk->size);
+    /* Après environ 1.5 seconde de temps CPU (1.5M cycles), l'écran de chargement (Block 1)
+     * a fini son intro, on charge automatiquement le Bloc 2 (partie principale de la démo) en mémoire. */
+    if (g_cpu.cycles > 1500000) {
+        TapBlock *blk = &g_tape.blocks[1];
+        debug_log(L"Turbo Tape Auto-Load : Chargement du bloc #2 ('%hs', Start=0x%04X, End=0x%04X, Len=%u)",
+                  blk->name, blk->start_addr, blk->end_addr, (unsigned)blk->size);
 
-            for (size_t i = 0; i < blk->size; i++) {
-                uint16_t addr = blk->start_addr + (uint16_t)i;
-                if (addr >= 0 && addr <= 0xFFFF) {
-                    g_ram[addr] = blk->data[i];
-                }
-            }
-
-            if ((blk->file_type & 0x80) == 0) {
-                uint16_t end_p = blk->end_addr + 1;
-                g_ram[0x9A] = end_p & 0xFF;
-                g_ram[0x9B] = (end_p >> 8) & 0xFF;
-                g_ram[0x9C] = end_p & 0xFF;
-                g_ram[0x9D] = (end_p >> 8) & 0xFF;
-            }
-
-            g_tape.current_block_index++;
-
-            /* Simuler un retour de sous-programme réussi (A=0, Carry=0, RTS) */
-            g_cpu.a = 0;
-            g_cpu.p &= ~FLAG_C;
-            cpu_set_nz(0);
-
-            uint16_t lo = cpu_pop();
-            uint16_t hi = cpu_pop();
-            g_cpu.pc = (lo | (hi << 8)) + 1;
+        for (size_t i = 0; i < blk->size; i++) {
+            uint16_t addr = blk->start_addr + (uint16_t)i;
+            g_ram[addr] = blk->data[i];
         }
+
+        g_tape.block2_loaded = true;
+        debug_log(L"Turbo Tape Auto-Load : Bloc 2 chargé avec succès en mémoire !");
     }
 }
 
 static void cpu_step(void) {
-    check_tape_trap();
+    check_tape_autoload();
 
     if (g_cpu.nmi_pending) {
         g_cpu.nmi_pending = false;
@@ -891,8 +872,8 @@ static void video_render_frame(void) {
 }
 
 /* ============================================================================
-    CHARGEMENT ROM
-   ============================================================================ */
+ * CHARGEMENT ROM
+ * ============================================================================ */
 static void oric_load_rom(const wchar_t *path) {
     FILE *f = _wfopen(path, L"rb");
     if (!f) return;
@@ -902,14 +883,14 @@ static void oric_load_rom(const wchar_t *path) {
 
     if (n == 16384) {
         g_rom_loaded = true;
-        debug_log(L"ROM chargée avec succès : %ls (16384 octets)", path);
+        debug_log(L"ROM chargée : %ls (16384 octets)", path);
     } else {
-        debug_log(L"Erreur : Taille de ROM incorrecte (%u octets) pour %ls", (unsigned)n, path);
+        debug_log(L"Erreur : Taille ROM incorrecte (%u octets)", (unsigned)n);
     }
 }
 
 /* ============================================================================
- * CHARGEMENT .TAP & TURBO TAPE MULTI-BLOCS
+ * CHARGEMENT .TAP & TURBO TAPE MULTI-BLOCS SÉQUENTIEL
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -980,6 +961,7 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
     g_tape.num_blocks = count;
     g_tape.current_block_index = 0;
     g_tape.active = true;
+    g_tape.block2_loaded = false;
 
     ptr = 0;
     int bidx = 0;
@@ -1022,16 +1004,15 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
     free(buf);
 
     if (g_tape.num_blocks > 0) {
-        /* Charger immédiatement le premier bloc */
+        /* Charger immédiatement le premier bloc (écran de chargement / loader) */
         TapBlock *first = &g_tape.blocks[0];
         memcpy(g_tape.current_name, first->name, sizeof(g_tape.current_name));
         for (size_t i = 0; i < first->size; i++) {
             g_ram[first->start_addr + (uint16_t)i] = first->data[i];
         }
-        g_tape.current_block_index = 1;
 
         if (first->file_type & 0x80) {
-            debug_log(L"Démarrage automatique Code Machine à 0x%04X", first->start_addr);
+            debug_log(L"Démarrage automatique Bloc 1 à 0x%04X", first->start_addr);
             g_cpu.pc = first->start_addr;
         } else {
             debug_log(L"Démarrage automatique programme BASIC");
@@ -1047,7 +1028,7 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
 }
 
 /* ============================================================================
- * GESTION CLAVIER ROBUSTE (AZERTY / QWERTY / SHIFT+3 POUR ")
+ * GESTION CLAVIER (AZERTY / QWERTY / SHIFT+3 POUR ")
  * ============================================================================ */
 static void keyboard_set_key(int row, int col, bool pressed) {
     if (row < 0 || row > 7 || col < 0 || col > 7) return;
@@ -1087,8 +1068,7 @@ static void keyboard_handle_vk(UINT vk, bool pressed) {
         case '2': case VK_NUMPAD2: row = 2; col = 6; break;
         case '3':
             if (GetKeyState(VK_SHIFT) & 0x8000) {
-                /* Shift + 3 sur AZERTY / Français -> guillemet double " (ligne 3, col 7) + Shift */
-                keyboard_set_key(4, 4, pressed); /* Shift */
+                keyboard_set_key(4, 4, pressed);
                 row = 3; col = 7;
             } else {
                 row = 0; col = 7;
@@ -1205,7 +1185,7 @@ static void keyboard_handle_char(wchar_t ch) {
     if (row >= 0 && col >= 0) {
         if (shift_needed) keyboard_set_key(4, 4, true);
         keyboard_set_key(row, col, true);
-        Sleep(35); /* Brève impulsion pour que l'émulation lise la touche */
+        Sleep(35);
         keyboard_set_key(row, col, false);
         if (shift_needed) keyboard_set_key(4, 4, false);
     }
