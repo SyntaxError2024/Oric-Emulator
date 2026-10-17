@@ -11,7 +11,8 @@
  *     - Fichiers batch (.bat) encodés en Windows-1252.
  *     - Console de débogage active avec affichage en direct des événements.
  *     - Glisser-déposer de fichiers .TAP et .ROM, et arguments en ligne de commande.
- *     - Chargement K7 multi-blocs universel (Tape Trap sur la plage ROM 0xF100-0xF4FF).
+ *     - Émulation matérielle du flux de bits K7 (Cassette Bitstream Encoder) sur VIA Port B bit 3
+ *       pour les chargeurs personnalisés avec animation de chargement (*Welcome To The Oric Atmos*).
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
  * ============================================================================
@@ -134,21 +135,11 @@ static int g_frame_counter = 0;
 /* --- Matrice Clavier Oric (8x8) --- */
 static uint8_t g_key_matrix[8];
 
-/* --- Structure Bloc TAP pour Tape Trap --- */
+/* --- État K7 / Tape Stream & Bitstream --- */
 typedef struct {
-    uint8_t file_type;
-    uint8_t autorun;
-    uint16_t start_addr;
-    uint16_t end_addr;
-    char name[32];
     uint8_t *data;
     size_t size;
-} TapBlock;
-
-typedef struct {
-    TapBlock *blocks;
-    int num_blocks;
-    int current_block_index;
+    size_t pos;
     char current_name[32];
     bool active;
 } TapeState;
@@ -289,7 +280,37 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * ACCÈS MÉMOIRE & TAPE TRAP UNIVERSEL (0xF100 - 0xF4FF)
+ * CASSETTE BITSTREAM ENCODER SUR VIA PORT B BIT 3 (0x08)
+ * ============================================================================ */
+static uint8_t get_cassette_bit(void) {
+    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0;
+
+    /* Cadencement des bits K7 basé sur les cycles CPU (ex: 400 cycles par bit) */
+    uint64_t bit_period = 400;
+    uint64_t total_bits_elapsed = g_cpu.cycles / bit_period;
+    
+    size_t bits_per_byte = 10; /* Start + 8 data bits + Stop */
+    size_t total_bits = g_tape.size * bits_per_byte;
+    size_t current_bit = total_bits_elapsed % total_bits;
+
+    size_t byte_idx = current_bit / bits_per_byte;
+    size_t bit_idx = current_bit % bits_per_byte;
+
+    uint8_t b = g_tape.data[byte_idx];
+    int bit_val = 0;
+    if (bit_idx == 0) {
+        bit_val = 0; /* Start bit (0) */
+    } else if (bit_idx >= 1 && bit_idx <= 8) {
+        bit_val = (b >> (bit_idx - 1)) & 1; /* LSB first */
+    } else {
+        bit_val = 1; /* Stop bit (1) */
+    }
+
+    return bit_val ? 0x08 : 0x00; /* Connecté au bit 3 de VIA Port B (0x08) */
+}
+
+/* ============================================================================
+ * ACCÈS MÉMOIRE
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
     if ((addr & 0xFF00) == 0x0300) {
@@ -303,7 +324,9 @@ static uint8_t mem_read(uint16_t addr) {
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                return (g_via.orb & g_via.ddrb) | (key_bit & ~g_via.ddrb);
+                uint8_t tape_bit = get_cassette_bit();
+                uint8_t combined = key_bit | tape_bit;
+                return (g_via.orb & g_via.ddrb) | (combined & ~g_via.ddrb);
             }
             case 0x01:
             case 0x0F: {
@@ -393,7 +416,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
 }
 
 /* ============================================================================
- * ÉMULATION CPU 6502 & TAPE TRAP INTERCEPTION
+ * ÉMULATION CPU 6502
  * ============================================================================ */
 static void cpu_reset(void) {
     g_cpu.a = 0;
@@ -423,47 +446,7 @@ static inline uint8_t cpu_pop(void) {
     return mem_read(0x0100 + (++g_cpu.sp & 0xFF));
 }
 
-static void check_tape_trap(void) {
-    if (!g_tape.active) return;
-
-    /* Intercepter les appels ROM K7 (0xF100 à 0xF4FF) :
-     * Dès que le programme tente de charger un bloc suivant, on l'injecte instantanément. */
-    if (g_cpu.pc >= 0xF100 && g_cpu.pc <= 0xF4FF) {
-        if (g_tape.current_block_index < g_tape.num_blocks) {
-            TapBlock *blk = &g_tape.blocks[g_tape.current_block_index];
-            debug_log(L"Tape Trap (PC=0x%04X) : Chargement auto du bloc #%d ('%hs', Addr=0x%04X, Len=%u)",
-                      g_cpu.pc, g_tape.current_block_index + 1, blk->name, blk->start_addr, (unsigned)blk->size);
-
-            for (size_t i = 0; i < blk->size; i++) {
-                uint16_t addr = blk->start_addr + (uint16_t)i;
-                g_ram[addr] = blk->data[i];
-            }
-
-            if ((blk->file_type & 0x80) == 0) {
-                uint16_t end_p = blk->end_addr + 1;
-                g_ram[0x9A] = end_p & 0xFF;
-                g_ram[0x9B] = (end_p >> 8) & 0xFF;
-                g_ram[0x9C] = end_p & 0xFF;
-                g_ram[0x9D] = (end_p >> 8) & 0xFF;
-            }
-
-            g_tape.current_block_index++;
-
-            /* Simuler succès (A=0, Carry=0) et retour RTS */
-            g_cpu.a = 0;
-            g_cpu.p &= ~FLAG_C;
-            cpu_set_nz(0);
-
-            uint16_t lo = cpu_pop();
-            uint16_t hi = cpu_pop();
-            g_cpu.pc = (lo | (hi << 8)) + 1;
-        }
-    }
-}
-
 static void cpu_step(void) {
-    check_tape_trap();
-
     if (g_cpu.nmi_pending) {
         g_cpu.nmi_pending = false;
         cpu_push((g_cpu.pc >> 8) & 0xFF);
@@ -907,7 +890,7 @@ static void oric_load_rom(const wchar_t *path) {
 }
 
 /* ============================================================================
- * CHARGEMENT .TAP & TAPE TRAP MULTI-BLOCS UNIVERSEL
+ * CHARGEMENT .TAP ET BITSTREAM CASSETTE GLOBAL
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -945,101 +928,47 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
 
     debug_log(L"Fichier .TAP ouvert : %ls (Taille: %u octets)", filename, (unsigned)fsize);
 
-    if (g_tape.blocks) {
-        for (int i = 0; i < g_tape.num_blocks; i++) {
-            if (g_tape.blocks[i].data) free(g_tape.blocks[i].data);
-        }
-        free(g_tape.blocks);
-        g_tape.blocks = NULL;
+    if (g_tape.data) {
+        free(g_tape.data);
     }
-
-    size_t ptr = 0;
-    int count = 0;
-    while (ptr < fsize) {
-        while (ptr < fsize && buf[ptr] != 0x24) ptr++;
-        if (ptr >= fsize) break;
-        ptr++;
-        if (ptr + 9 > fsize) break;
-        uint16_t end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
-        uint16_t start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
-        ptr += 9;
-        size_t dlen = (end_addr >= start_addr) ? (end_addr - start_addr + 1) : 0;
-        while (ptr < fsize && buf[ptr] != 0) ptr++;
-        if (ptr < fsize && buf[ptr] == 0) ptr++;
-        if (ptr + dlen <= fsize) {
-            ptr += dlen;
-            count++;
-        } else {
-            break;
-        }
-    }
-
-    g_tape.blocks = (TapBlock *)malloc(count * sizeof(TapBlock));
-    g_tape.num_blocks = count;
-    g_tape.current_block_index = 0;
+    g_tape.data = buf;
+    g_tape.size = fsize;
+    g_tape.pos = 0;
     g_tape.active = true;
 
-    ptr = 0;
-    int bidx = 0;
-    while (ptr < fsize && bidx < count) {
-        while (ptr < fsize && buf[ptr] != 0x24) ptr++;
-        if (ptr >= fsize) break;
+    /* Extraire le premier bloc pour le démarrer (ex: écran de chargement 0x0410) */
+    size_t ptr = 0;
+    while (ptr < fsize && buf[ptr] != 0x24) ptr++;
+    if (ptr < fsize) {
         ptr++;
-        if (ptr + 9 > fsize) break;
+        if (ptr + 9 <= fsize) {
+            uint16_t end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
+            uint16_t start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
+            uint8_t file_type   = buf[ptr + 2];
+            ptr += 9;
 
-        g_tape.blocks[bidx].file_type = buf[ptr + 2];
-        g_tape.blocks[bidx].autorun   = buf[ptr + 3];
-        g_tape.blocks[bidx].end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
-        g_tape.blocks[bidx].start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
-        ptr += 9;
+            char bname[32] = {0};
+            int ni = 0;
+            while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
+                bname[ni++] = (char)buf[ptr++];
+            }
+            if (ptr < fsize && buf[ptr] == 0) ptr++;
 
-        int ni = 0;
-        while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
-            g_tape.blocks[bidx].name[ni++] = (char)buf[ptr++];
-        }
-        g_tape.blocks[bidx].name[ni] = 0;
-        if (ptr < fsize && buf[ptr] == 0) ptr++;
+            ansi_to_wide(bname, (wchar_t*)g_tape.current_name, 32);
+            size_t dlen = (end_addr >= start_addr) ? (end_addr - start_addr + 1) : 0;
 
-        size_t dlen = (g_tape.blocks[bidx].end_addr >= g_tape.blocks[bidx].start_addr) ?
-                      (g_tape.blocks[bidx].end_addr - g_tape.blocks[bidx].start_addr + 1) : 0;
+            if (ptr + dlen <= fsize) {
+                for (size_t i = 0; i < dlen; i++) {
+                    g_ram[start_addr + (uint16_t)i] = buf[ptr + i];
+                }
+                debug_log(L"Bloc 1 chargé en mémoire : '%ls' (Start=0x%04X, Len=%u)",
+                          (wchar_t*)g_tape.current_name, start_addr, (unsigned)dlen);
 
-        g_tape.blocks[bidx].size = dlen;
-        g_tape.blocks[bidx].data = (uint8_t *)malloc(dlen);
-        memcpy(g_tape.blocks[bidx].data, buf + ptr, dlen);
-        ptr += dlen;
-
-        wchar_t wname[32];
-        ansi_to_wide(g_tape.blocks[bidx].name, wname, 32);
-        debug_log(L"Bloc TAP #%d : Nom=\"%ls\", Type=0x%02X, Début=0x%04X, Fin=0x%04X, Longueur=%u",
-                  bidx + 1, wname, g_tape.blocks[bidx].file_type,
-                  g_tape.blocks[bidx].start_addr, g_tape.blocks[bidx].end_addr, (unsigned)dlen);
-
-        bidx++;
-    }
-
-    free(buf);
-
-    if (g_tape.num_blocks > 0) {
-        /* Charger immédiatement le premier bloc */
-        TapBlock *first = &g_tape.blocks[0];
-        memcpy(g_tape.current_name, first->name, sizeof(g_tape.current_name));
-        for (size_t i = 0; i < first->size; i++) {
-            g_ram[first->start_addr + (uint16_t)i] = first->data[i];
-        }
-        g_tape.current_block_index = 1; /* Le prochain bloc (Bloc 2) sera chargé par le Tape Trap dès que demandé */
-
-        if (first->file_type & 0x80) {
-            debug_log(L"Démarrage automatique Bloc 1 à 0x%04X", first->start_addr);
-            g_cpu.pc = first->start_addr;
-        } else {
-            debug_log(L"Démarrage automatique programme BASIC");
-            uint16_t end_p = first->end_addr + 1;
-            g_ram[0x9A] = end_p & 0xFF;
-            g_ram[0x9B] = (end_p >> 8) & 0xFF;
-            g_ram[0x9C] = end_p & 0xFF;
-            g_ram[0x9D] = (end_p >> 8) & 0xFF;
-            g_ram[0x02DF] = 'R';
-            g_ram[0x0208] = 0;
+                if (file_type & 0x80) {
+                    g_cpu.pc = start_addr;
+                    debug_log(L"Exécution Bloc 1 à PC=0x%04X", start_addr);
+                }
+            }
         }
     }
 }
