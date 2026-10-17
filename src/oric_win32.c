@@ -12,7 +12,7 @@
  *     - Console de débogage active avec affichage en direct des événements.
  *     - Glisser-déposer de fichiers .TAP, .ROM, .DSK et arguments en ligne de commande.
  *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, désactivé par défaut pour éviter "adjustment required").
- *     - Émulation matérielle du flux de bits K7 (Cassette Bitstream sur Port B bit 3 et Port A bit 7).
+ *     - Chargement instantané multi-blocs K7 (.TAP) pour les démos/jeux avec animation.
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
  * ============================================================================
@@ -139,12 +139,11 @@ static int g_frame_counter = 0;
 /* --- Matrice Clavier Oric (8x8) --- */
 static uint8_t g_key_matrix[8];
 
-/* --- État K7 / Tape Stream & Bitstream --- */
+/* --- État K7 / Tape --- */
 typedef struct {
     uint8_t *data;
     size_t size;
     size_t pos;
-    size_t stream_start_offset;
     char current_name[32];
     bool active;
 } TapeState;
@@ -286,43 +285,6 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
- * ============================================================================ */
-static uint8_t get_cassette_bit(void) {
-    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0;
-
-    size_t start_offset = g_tape.stream_start_offset;
-    if (start_offset >= g_tape.size) start_offset = 0;
-
-    size_t stream_size = g_tape.size - start_offset;
-    if (stream_size == 0) return 0;
-
-    uint64_t bit_period = 350;
-    uint64_t total_bits_elapsed = g_cpu.cycles / bit_period;
-    
-    size_t bits_per_byte = 10;
-    size_t total_bits = stream_size * bits_per_byte;
-    size_t current_bit = total_bits_elapsed % total_bits;
-
-    size_t byte_idx = start_offset + (current_bit / bits_per_byte);
-    size_t bit_idx = current_bit % bits_per_byte;
-
-    if (byte_idx >= g_tape.size) return 0;
-
-    uint8_t b = g_tape.data[byte_idx];
-    int bit_val = 0;
-    if (bit_idx == 0) {
-        bit_val = 0; /* Start bit */
-    } else if (bit_idx >= 1 && bit_idx <= 8) {
-        bit_val = (b >> (bit_idx - 1)) & 1; /* Data bits */
-    } else {
-        bit_val = 1; /* Stop bit */
-    }
-
-    return bit_val ? 0x88 : 0x00; /* Port B bit 3 (0x08) et Port A bit 7 (0x80) */
-}
-
-/* ============================================================================
  * ACCÈS MÉMOIRE & MICRODISC FDC / ROM
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
@@ -350,7 +312,7 @@ static uint8_t mem_read(uint16_t addr) {
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                uint8_t tape_bit = get_cassette_bit() & 0x08;
+                uint8_t tape_bit = 0x08; /* Toujours prêt / bit k7 haut (bypass sans attente) */
                 uint8_t combined = key_bit | tape_bit;
                 return (g_via.orb & g_via.ddrb) | (combined & ~g_via.ddrb);
             }
@@ -362,7 +324,7 @@ static uint8_t mem_read(uint16_t addr) {
                     return g_ay.regs[g_ay.selected_reg & 0x0F];
                 }
                 uint8_t ora_val = g_via.ora;
-                uint8_t tape_bit_a = get_cassette_bit() & 0x80;
+                uint8_t tape_bit_a = 0x80;
                 return (ora_val & g_via.ddra) | (tape_bit_a & ~g_via.ddra) | (~g_via.ddra & 0x7F);
             }
             case 0x02: return g_via.ddrb;
@@ -760,7 +722,7 @@ static void via_reset(void) {
     g_via.ier = 0x40;
     g_via.pcr = 0xCC;
     g_via.t1_active = true;
-    g_microdis_control = 0x04; /* Microdisc ROM désactivée par défaut au démarrage (évite le blocage adjustment required) */
+    g_microdis_control = 0x04; /* Microdisc ROM désactivée par défaut au démarrage */
 }
 
 static void via_step(uint32_t cycles) {
@@ -949,7 +911,7 @@ static void oric_load_microdis_rom(const wchar_t *path) {
 }
 
 /* ============================================================================
- * CHARGEMENT .TAP ET INJECTION DU BLOC 1 + FLUX DE BITS K7 POUR LA SUITE
+ * CHARGEMENT INSTANTANÉ MULTI-BLOCS .TAP (BYPASS K7 RAPIDE & INTÉGRAL)
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -993,14 +955,15 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
     g_tape.data = buf;
     g_tape.size = fsize;
     g_tape.pos = 0;
-    g_tape.stream_start_offset = 0;
     g_tape.active = true;
 
-    /* Extraire le premier bloc (intro / écran de chargement) pour affichage instantané */
+    /* Charger TOUS les blocs du fichier .TAP en mémoire à leurs adresses exactes */
     size_t ptr = 0;
-    while (ptr < fsize && buf[ptr] != 0x24) ptr++;
-    if (ptr < fsize) {
-        ptr++;
+    bool first_block = true;
+    while (ptr < fsize) {
+        while (ptr < fsize && buf[ptr] != 0x24) ptr++;
+        if (ptr >= fsize) break;
+        ptr++; /* skip 0x24 */
         if (ptr + 9 <= fsize) {
             uint16_t end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
             uint16_t start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
@@ -1014,24 +977,30 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
             }
             if (ptr < fsize && buf[ptr] == 0) ptr++;
 
-            ansi_to_wide(bname, (wchar_t*)g_tape.current_name, 32);
             size_t dlen = (end_addr >= start_addr) ? (end_addr - start_addr + 1) : 0;
-
             if (ptr + dlen <= fsize) {
                 for (size_t i = 0; i < dlen; i++) {
                     g_ram[start_addr + (uint16_t)i] = buf[ptr + i];
                 }
-                debug_log(L"Bloc 1 injecté : '%ls' (Start=0x%04X, Len=%u)",
-                          (wchar_t*)g_tape.current_name, start_addr, (unsigned)dlen);
+                wchar_t wname[32];
+                ansi_to_wide(bname, wname, 32);
+                debug_log(L"Bloc .TAP chargé : '%ls' (Start=0x%04X, End=0x%04X, Len=%u)",
+                          wname, start_addr, end_addr, (unsigned)dlen);
 
-                if (file_type & 0x80) {
-                    g_cpu.pc = start_addr;
-                    debug_log(L"Exécution Bloc 1 à PC=0x%04X", start_addr);
+                if (first_block) {
+                    ansi_to_wide(bname, (wchar_t*)g_tape.current_name, 32);
+                    if (file_type & 0x80) {
+                        g_cpu.pc = start_addr;
+                        debug_log(L"Exécution Bloc 1 à PC=0x%04X", start_addr);
+                    }
+                    first_block = false;
                 }
-
-                /* Le flux k7 pour les blocs suivants (suite de la démo) commence après le Bloc 1 */
-                g_tape.stream_start_offset = ptr + dlen;
+                ptr += dlen;
+            } else {
+                break;
             }
+        } else {
+            break;
         }
     }
 }
@@ -1201,7 +1170,7 @@ static void keyboard_handle_char(wchar_t ch) {
 }
 
 /* ============================================================================
- * AUDIO WIN32 (WAVEOUT)
+ * AUDIO WIN32 (WAVEOUT) - SANS BRUIT DE FOND (RONRONNEMENT CORRIGÉ)
  * ============================================================================ */
 static void audio_init(HWND hwnd) {
     WAVEFORMATEX wfx;
@@ -1240,16 +1209,16 @@ static void audio_update(void) {
         int sample = 0;
         for (int ch = 0; ch < 3; ch++) {
             ay->tone_counter[ch]++;
-            if (ay->tone_counter[ch] >= ay->tone_period[ch]) {
+            if (ay->tone_period[ch] > 0 && ay->tone_counter[ch] >= ay->tone_period[ch]) {
                 ay->tone_counter[ch] = 0;
                 ay->tone_output[ch] ^= 1;
             }
             int volume = ay->regs[8 + ch] & 0x0F;
-            if (ay->tone_output[ch] && volume > 0) {
-                sample += (volume * 100);
+            if (ay->tone_output[ch] && volume > 0 && ay->tone_period[ch] > 0) {
+                sample += (volume * 150);
             }
         }
-        buf[i] = (short)(sample - 600);
+        buf[i] = (short)sample; /* Zéro offset = pas de ronronnement */
     }
 
     WAVEHDR *hdr = &ay->waveHdr[ay->currentBuffer];
