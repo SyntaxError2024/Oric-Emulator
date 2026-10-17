@@ -11,8 +11,8 @@
  *     - Fichiers batch (.bat) encodés en Windows-1252.
  *     - Console de débogage active avec affichage en direct des événements.
  *     - Glisser-déposer de fichiers .TAP, .ROM, .DSK et arguments en ligne de commande.
- *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, désactivé par défaut pour éviter "adjustment required").
- *     - Chargement instantané multi-blocs K7 (.TAP) pour les démos/jeux avec animation.
+ *     - Émulation du contrôleur Microdisc (MICRODIS.ROM à 0xE000, désactivé par défaut).
+ *     - Chargement K7 authentique avec auto-CLOAD et flux de bits série (animation de chargement).
  *     - Support clavier AZERTY / QWERTY complet (Shift+3 pour ", caractères accentués).
  *     - Plein écran par Alt+Entrée.
  * ============================================================================
@@ -139,13 +139,15 @@ static int g_frame_counter = 0;
 /* --- Matrice Clavier Oric (8x8) --- */
 static uint8_t g_key_matrix[8];
 
-/* --- État K7 / Tape --- */
+/* --- État K7 / Tape Stream & Auto-CLOAD --- */
 typedef struct {
     uint8_t *data;
     size_t size;
     size_t pos;
     char current_name[32];
     bool active;
+    bool auto_cload_triggered;
+    uint64_t cload_delay_cycles;
 } TapeState;
 
 static TapeState g_tape;
@@ -231,7 +233,7 @@ static void ay_write_reg(uint8_t reg, uint8_t val);
 static void ay_check_control(void);
 static void oric_load_rom(const wchar_t *path);
 static void oric_load_microdis_rom(const wchar_t *path);
-static void oric_inject_tap_and_run(const wchar_t *filename);
+static void oric_load_tap_file(const wchar_t *filename);
 static void keyboard_set_key(int row, int col, bool pressed);
 static void keyboard_handle_vk(UINT vk, bool pressed);
 static void keyboard_handle_char(wchar_t ch);
@@ -285,6 +287,37 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
+ * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
+ * ============================================================================ */
+static uint8_t get_cassette_bit(void) {
+    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0x08;
+
+    uint64_t bit_period = 350; /* ~2400 baud */
+    uint64_t total_bits_elapsed = g_cpu.cycles / bit_period;
+    
+    size_t bits_per_byte = 10;
+    size_t total_bits = g_tape.size * bits_per_byte;
+    size_t current_bit = total_bits_elapsed % total_bits;
+
+    size_t byte_idx = current_bit / bits_per_byte;
+    size_t bit_idx = current_bit % bits_per_byte;
+
+    g_tape.pos = byte_idx;
+
+    uint8_t b = g_tape.data[byte_idx];
+    int bit_val = 0;
+    if (bit_idx == 0) {
+        bit_val = 0; /* Start bit */
+    } else if (bit_idx >= 1 && bit_idx <= 8) {
+        bit_val = (b >> (bit_idx - 1)) & 1; /* Data bits */
+    } else {
+        bit_val = 1; /* Stop bit */
+    }
+
+    return bit_val ? 0x88 : 0x00; /* Port B bit 3 (0x08) et Port A bit 7 (0x80) */
+}
+
+/* ============================================================================
  * ACCÈS MÉMOIRE & MICRODISC FDC / ROM
  * ============================================================================ */
 static uint8_t mem_read(uint16_t addr) {
@@ -312,7 +345,7 @@ static uint8_t mem_read(uint16_t addr) {
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                uint8_t tape_bit = 0x08; /* Toujours prêt / bit k7 haut (bypass sans attente) */
+                uint8_t tape_bit = get_cassette_bit() & 0x08;
                 uint8_t combined = key_bit | tape_bit;
                 return (g_via.orb & g_via.ddrb) | (combined & ~g_via.ddrb);
             }
@@ -324,7 +357,7 @@ static uint8_t mem_read(uint16_t addr) {
                     return g_ay.regs[g_ay.selected_reg & 0x0F];
                 }
                 uint8_t ora_val = g_via.ora;
-                uint8_t tape_bit_a = 0x80;
+                uint8_t tape_bit_a = get_cassette_bit() & 0x80;
                 return (ora_val & g_via.ddra) | (tape_bit_a & ~g_via.ddra) | (~g_via.ddra & 0x7F);
             }
             case 0x02: return g_via.ddrb;
@@ -421,7 +454,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
 }
 
 /* ============================================================================
- * ÉMULATION CPU 6502
+ * ÉMULATION CPU 6502 & AUTO-CLOAD SIMULATION
  * ============================================================================ */
 static void cpu_reset(void) {
     g_cpu.a = 0;
@@ -451,7 +484,25 @@ static inline uint8_t cpu_pop(void) {
     return mem_read(0x0100 + (++g_cpu.sp & 0xFF));
 }
 
+    /* Unused helper */
+
 static void cpu_step(void) {
+    /* Auto-CLOAD si un fichier TAP est chargé : tape "CLOAD\n" après boot BASIC */
+    if (g_tape.active && !g_tape.auto_cload_triggered) {
+        if (g_cpu.cycles > 1200000) { /* ~1.2 seconde après le démarrage BASIC */
+            g_tape.auto_cload_triggered = true;
+            debug_log(L"Auto-CLOAD : Démarrage du chargement de la cassette (.TAP)");
+            /* Injecter "CLOAD\r" dans le buffer clavier ou simuler les touches */
+            keyboard_handle_char(L'c'); Sleep(30);
+            keyboard_handle_char(L'l'); Sleep(30);
+            keyboard_handle_char(L'o'); Sleep(30);
+            keyboard_handle_char(L'a'); Sleep(30);
+            keyboard_handle_char(L'd'); Sleep(30);
+            keyboard_handle_vk(VK_RETURN, true); Sleep(30);
+            keyboard_handle_vk(VK_RETURN, false);
+        }
+    }
+
     if (g_cpu.nmi_pending) {
         g_cpu.nmi_pending = false;
         cpu_push((g_cpu.pc >> 8) & 0xFF);
@@ -911,7 +962,7 @@ static void oric_load_microdis_rom(const wchar_t *path) {
 }
 
 /* ============================================================================
- * CHARGEMENT INSTANTANÉ MULTI-BLOCS .TAP (BYPASS K7 RAPIDE & INTÉGRAL)
+ * CHARGEMENT .TAP AUTHENTIQUE AVEC AUTO-CLOAD
  * ============================================================================ */
 static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     if (!src || !dst || max_len <= 0) return;
@@ -926,7 +977,7 @@ static void ansi_to_wide(const char *src, wchar_t *dst, int max_len) {
     }
 }
 
-static void oric_inject_tap_and_run(const wchar_t *filename) {
+static void oric_load_tap_file(const wchar_t *filename) {
     FILE *f = _wfopen(filename, L"rb");
     if (!f) {
         wchar_t msg[512];
@@ -956,51 +1007,21 @@ static void oric_inject_tap_and_run(const wchar_t *filename) {
     g_tape.size = fsize;
     g_tape.pos = 0;
     g_tape.active = true;
+    g_tape.auto_cload_triggered = false;
 
-    /* Charger TOUS les blocs du fichier .TAP en mémoire à leurs adresses exactes */
+    // Extraire le nom du premier bloc pour l'affichage
     size_t ptr = 0;
-    bool first_block = true;
-    while (ptr < fsize) {
-        while (ptr < fsize && buf[ptr] != 0x24) ptr++;
-        if (ptr >= fsize) break;
-        ptr++; /* skip 0x24 */
+    while (ptr < fsize && buf[ptr] != 0x24) ptr++;
+    if (ptr < fsize) {
+        ptr++;
         if (ptr + 9 <= fsize) {
-            uint16_t end_addr   = ((uint16_t)buf[ptr + 4] << 8) | buf[ptr + 5];
-            uint16_t start_addr = ((uint16_t)buf[ptr + 6] << 8) | buf[ptr + 7];
-            uint8_t file_type   = buf[ptr + 2];
             ptr += 9;
-
             char bname[32] = {0};
             int ni = 0;
             while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
                 bname[ni++] = (char)buf[ptr++];
             }
-            if (ptr < fsize && buf[ptr] == 0) ptr++;
-
-            size_t dlen = (end_addr >= start_addr) ? (end_addr - start_addr + 1) : 0;
-            if (ptr + dlen <= fsize) {
-                for (size_t i = 0; i < dlen; i++) {
-                    g_ram[start_addr + (uint16_t)i] = buf[ptr + i];
-                }
-                wchar_t wname[32];
-                ansi_to_wide(bname, wname, 32);
-                debug_log(L"Bloc .TAP chargé : '%ls' (Start=0x%04X, End=0x%04X, Len=%u)",
-                          wname, start_addr, end_addr, (unsigned)dlen);
-
-                if (first_block) {
-                    ansi_to_wide(bname, (wchar_t*)g_tape.current_name, 32);
-                    if (file_type & 0x80) {
-                        g_cpu.pc = start_addr;
-                        debug_log(L"Exécution Bloc 1 à PC=0x%04X", start_addr);
-                    }
-                    first_block = false;
-                }
-                ptr += dlen;
-            } else {
-                break;
-            }
-        } else {
-            break;
+            ansi_to_wide(bname, (wchar_t*)g_tape.current_name, 32);
         }
     }
 }
@@ -1170,7 +1191,7 @@ static void keyboard_handle_char(wchar_t ch) {
 }
 
 /* ============================================================================
- * AUDIO WIN32 (WAVEOUT) - SANS BRUIT DE FOND (RONRONNEMENT CORRIGÉ)
+ * AUDIO WIN32 (WAVEOUT) - SANS BRUIT DE FOND
  * ============================================================================ */
 static void audio_init(HWND hwnd) {
     WAVEFORMATEX wfx;
@@ -1218,7 +1239,7 @@ static void audio_update(void) {
                 sample += (volume * 150);
             }
         }
-        buf[i] = (short)sample; /* Zéro offset = pas de ronronnement */
+        buf[i] = (short)sample;
     }
 
     WAVEHDR *hdr = &ay->waveHdr[ay->currentBuffer];
@@ -1292,15 +1313,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 wchar_t *ext = wcsrchr(filename, L'.');
                 if (ext && (_wcsicmp(ext, L".tap") == 0)) {
                     debug_log(L"Fichier .TAP déposé : %ls", filename);
-                    oric_inject_tap_and_run(filename);
+                    oric_load_tap_file(filename);
                     wchar_t title[512];
                     wchar_t wname[32];
                     ansi_to_wide(g_tape.current_name, wname, 32);
-                    swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
+                    swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
                     SetWindowTextW(hwnd, title);
                 } else if (ext && (_wcsicmp(ext, L".dsk") == 0)) {
                     debug_log(L"Image disque .DSK chargée : %ls", filename);
-                    g_microdis_control = 0x00; /* Activer le contrôleur Microdisc pour le disque */
+                    g_microdis_control = 0x00;
                     SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
                     debug_log(L"Fichier .ROM déposé : %ls", filename);
@@ -1482,15 +1503,15 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         wchar_t *ext = wcsrchr(path, L'.');
         if (ext) {
             if (_wcsicmp(ext, L".tap") == 0) {
-                oric_inject_tap_and_run(path);
+                oric_load_tap_file(path);
                 wchar_t title[512];
                 wchar_t wname[32];
                 ansi_to_wide(g_tape.current_name, wname, 32);
-                swprintf(title, 512, L"Oric Atmos - [Jeu chargé : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
+                swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]", g_tape.current_name[0] ? wname : L"Inconnu");
                 SetWindowTextW(hwnd, title);
             } else if (_wcsicmp(ext, L".dsk") == 0) {
                 debug_log(L"Image disque .DSK chargée : %ls", path);
-                g_microdis_control = 0x00; /* Activer le contrôleur Microdisc pour le disque */
+                g_microdis_control = 0x00;
                 SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
             }
         }
@@ -1545,6 +1566,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
 int wmain(int argc, wchar_t *argv[]) {
     HINSTANCE hInst = GetModuleHandleW(NULL);
-    const wchar_t *arg = (argc > 1) ? argv[1] : L"";
-    return run_emulator(hInst, arg, SW_SHOWNORMAL);
+    const wchar_t *real_arg = (argc > 1) ? argv[1] : L"";
+    return run_emulator(hInst, real_arg, SW_SHOWNORMAL);
 }
