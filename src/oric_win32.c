@@ -148,6 +148,8 @@ typedef struct {
     bool active;
     bool auto_cload_triggered;
     uint64_t cload_delay_cycles;
+    bool started;
+    uint64_t start_cpu_cycles;
 } TapeState;
 
 static TapeState g_tape;
@@ -290,10 +292,17 @@ static void ay_check_control(void) {
  * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
  * ============================================================================ */
 static uint8_t get_cassette_bit(void) {
-    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0x08;
+    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0x00;
+
+    if (!g_tape.started) {
+        g_tape.started = true;
+        g_tape.start_cpu_cycles = g_cpu.cycles;
+        debug_log(L"Lecture cassette démarrée (synchronisée avec le CPU)");
+    }
 
     uint64_t bit_period = 350; /* ~2400 baud */
-    uint64_t total_bits_elapsed = g_cpu.cycles / bit_period;
+    uint64_t tape_cycles = (g_cpu.cycles >= g_tape.start_cpu_cycles) ? (g_cpu.cycles - g_tape.start_cpu_cycles) : 0;
+    uint64_t total_bits_elapsed = tape_cycles / bit_period;
     
     size_t bits_per_byte = 10;
     size_t total_bits = g_tape.size * bits_per_byte;
@@ -491,6 +500,8 @@ static void cpu_step(void) {
     if (g_tape.active && !g_tape.auto_cload_triggered) {
         if (g_cpu.cycles > 1200000) { /* ~1.2 seconde après le démarrage BASIC */
             g_tape.auto_cload_triggered = true;
+            g_tape.started = true;
+            g_tape.start_cpu_cycles = g_cpu.cycles;
             debug_log(L"Auto-CLOAD : Démarrage du chargement de la cassette (.TAP)");
             /* Injecter "CLOAD\r" dans le buffer clavier ou simuler les touches */
             keyboard_handle_char(L'c'); Sleep(30);
@@ -1008,6 +1019,8 @@ static void oric_load_tap_file(const wchar_t *filename) {
     g_tape.pos = 0;
     g_tape.active = true;
     g_tape.auto_cload_triggered = false;
+    g_tape.started = false;
+    g_tape.start_cpu_cycles = 0;
 
     // Extraire le nom du premier bloc pour l'affichage
     size_t ptr = 0;
@@ -1235,8 +1248,9 @@ static void audio_update(void) {
                 ay->tone_output[ch] ^= 1;
             }
             int volume = ay->regs[8 + ch] & 0x0F;
-            if (ay->tone_output[ch] && volume > 0 && ay->tone_period[ch] > 0) {
-                sample += (volume * 150);
+            if (volume > 0 && ay->tone_period[ch] > 0) {
+                int chan_val = ay->tone_output[ch] ? (volume * 100) : -(volume * 100);
+                sample += chan_val;
             }
         }
         buf[i] = (short)sample;
