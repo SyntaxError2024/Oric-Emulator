@@ -238,7 +238,6 @@ static void oric_load_microdis_rom(const wchar_t *path);
 static void oric_load_tap_file(const wchar_t *filename);
 static void keyboard_set_key(int row, int col, bool pressed);
 static void keyboard_handle_vk(UINT vk, bool pressed);
-static void keyboard_handle_char(wchar_t ch);
 static void audio_init(HWND hwnd);
 static void audio_update(void);
 static void audio_shutdown(void);
@@ -440,7 +439,7 @@ static uint8_t mem_read(uint16_t addr) {
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                return (g_via.orb & g_via.ddrb) | (key_bit & ~g_via.ddrb);
+                return (g_via.orb & ~0x08) | key_bit;
             }
             case 0x01:
             case 0x0F: {
@@ -1234,64 +1233,7 @@ static void keyboard_handle_vk(UINT vk, bool pressed) {
     }
 }
 
-static void keyboard_handle_char(wchar_t ch) {
-    int row = -1, col = -1, shift_needed = 0;
 
-    switch (ch) {
-        case L'a': case L'A': row = 6; col = 5; if (ch == L'A') shift_needed = 1; break;
-        case L'b': case L'B': row = 2; col = 2; if (ch == L'B') shift_needed = 1; break;
-        case L'c': case L'C': row = 2; col = 7; if (ch == L'C') shift_needed = 1; break;
-        case L'd': case L'D': row = 1; col = 7; if (ch == L'D') shift_needed = 1; break;
-        case L'e': case L'E': row = 6; col = 3; if (ch == L'E') shift_needed = 1; break;
-        case L'f': case L'F': row = 1; col = 3; if (ch == L'F') shift_needed = 1; break;
-        case L'g': case L'G': row = 6; col = 2; if (ch == L'G') shift_needed = 1; break;
-        case L'h': case L'H': row = 6; col = 1; if (ch == L'H') shift_needed = 1; break;
-        case L'i': case L'I': row = 5; col = 1; if (ch == L'I') shift_needed = 1; break;
-        case L'j': case L'J': row = 1; col = 0; if (ch == L'J') shift_needed = 1; break;
-        case L'k': case L'K': row = 3; col = 0; if (ch == L'K') shift_needed = 1; break;
-        case L'l': case L'L': row = 7; col = 1; if (ch == L'L') shift_needed = 1; break;
-        case L'm': case L'M': row = 2; col = 0; if (ch == L'M') shift_needed = 1; break;
-        case L'n': case L'N': row = 0; col = 1; if (ch == L'N') shift_needed = 1; break;
-        case L'o': case L'O': row = 5; col = 2; if (ch == L'O') shift_needed = 1; break;
-        case L'p': case L'P': row = 5; col = 3; if (ch == L'P') shift_needed = 1; break;
-        case L'q': case L'Q': row = 1; col = 6; if (ch == L'Q') shift_needed = 1; break;
-        case L'r': case L'R': row = 1; col = 2; if (ch == L'R') shift_needed = 1; break;
-        case L's': case L'S': row = 6; col = 6; if (ch == L'S') shift_needed = 1; break;
-        case L't': case L'T': row = 1; col = 1; if (ch == L'T') shift_needed = 1; break;
-        case L'u': case L'U': row = 5; col = 0; if (ch == L'U') shift_needed = 1; break;
-        case L'v': case L'V': row = 0; col = 3; if (ch == L'V') shift_needed = 1; break;
-        case L'w': case L'W': row = 6; col = 7; if (ch == L'W') shift_needed = 1; break;
-        case L'x': case L'X': row = 0; col = 6; if (ch == L'X') shift_needed = 1; break;
-        case L'y': case L'Y': row = 6; col = 0; if (ch == L'Y') shift_needed = 1; break;
-        case L'z': case L'Z': row = 2; col = 5; if (ch == L'Z') shift_needed = 1; break;
-        case L'0': row = 7; col = 2; break;
-        case L'1': row = 0; col = 5; break;
-        case L'2': row = 2; col = 6; break;
-        case L'3': row = 0; col = 7; break;
-        case L'4': row = 2; col = 3; break;
-        case L'5': row = 0; col = 2; break;
-        case L'6': row = 2; col = 1; break;
-        case L'7': row = 0; col = 0; break;
-        case L'8': row = 7; col = 0; break;
-        case L'9': row = 3; col = 1; break;
-        case L'"': row = 3; col = 7; shift_needed = 1; break;
-        case L' ': row = 4; col = 0; break;
-        case L',': row = 4; col = 1; break;
-        case L'.': row = 4; col = 2; break;
-        case L';': row = 3; col = 2; break;
-        case L'-': row = 3; col = 3; break;
-        case L'/': row = 7; col = 3; break;
-        case L'=': row = 7; col = 7; break;
-    }
-
-    if (row >= 0 && col >= 0) {
-        if (shift_needed) keyboard_set_key(4, 4, true);
-        keyboard_set_key(row, col, true);
-        Sleep(35);
-        keyboard_set_key(row, col, false);
-        if (shift_needed) keyboard_set_key(4, 4, false);
-    }
-}
 
 /* ============================================================================
  * AUDIO WIN32 (WAVEOUT) - SANS BRUIT DE FOND
@@ -1510,7 +1452,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
 
         case WM_CHAR:
-            keyboard_handle_char((wchar_t)wParam);
             return 0;
 
         case WM_KILLFOCUS:
