@@ -292,13 +292,7 @@ static void ay_check_control(void) {
  * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
  * ============================================================================ */
 static uint8_t get_cassette_bit(void) {
-    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return 0x00;
-
-    if (!g_tape.started) {
-        g_tape.started = true;
-        g_tape.start_cpu_cycles = g_cpu.cycles;
-        debug_log(L"Lecture cassette démarrée (synchronisée avec le CPU)");
-    }
+    if (!g_tape.active || !g_tape.data || g_tape.size == 0 || !g_tape.started) return 0x00;
 
     uint64_t bit_period = 350; /* ~2400 baud */
     uint64_t tape_cycles = (g_cpu.cycles >= g_tape.start_cpu_cycles) ? (g_cpu.cycles - g_tape.start_cpu_cycles) : 0;
@@ -1287,11 +1281,46 @@ static void toggle_fullscreen(HWND hwnd) {
         MONITORINFO mi = { sizeof(mi) };
         if (GetWindowPlacement(hwnd, &wp) && GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
             SetWindowLong(hwnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW);
+
+            // garder le ratio de l'oric en plein écran
+
+            // taille du monitor
+
+            int screen_w = mi.rcMonitor.right - mi.rcMonitor.left;
+            int screen_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+            // 1920x1080 = 1.77777
+
+            float ratioMonitor = screen_w / screen_h;
+
+            float ratio43 = 1.33; // ratio original de l'oric
+
+            int window_w;
+            int window_h;
+            int margin_left;
+            int margin_top;
+
+            if (screen_w * 3 > screen_h * 4)
+            {
+                // Écran trop large : utiliser toute la hauteur
+                window_h = screen_h;
+                window_w = screen_h * 4 / 3;
+            }
+            else
+            {
+                // Écran trop haut : utiliser toute la largeur
+                window_w = screen_w;
+                window_h = screen_w * 3 / 4;
+            }
+
+            margin_left = (screen_w - window_w) / 2;
+            margin_top = (screen_h - window_h) / 2;
+
             SetWindowPos(hwnd, HWND_TOP,
-                mi.rcMonitor.left, mi.rcMonitor.top,
-                mi.rcMonitor.right - mi.rcMonitor.left,
-                mi.rcMonitor.bottom - mi.rcMonitor.top,
-                SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                         margin_left, margin_top,
+                         window_w, window_h,
+                         SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                         
             debug_log(L"Basculement en Mode Plein Écran");
         }
     } else {
