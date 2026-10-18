@@ -143,13 +143,13 @@ static uint8_t g_key_matrix[8];
 typedef struct {
     uint8_t *data;
     size_t size;
-    size_t pos;
+    size_t byte_pos;
+    int bit_in_byte;
+    uint32_t bit_cycles_left;
     char current_name[32];
     bool active;
     bool auto_cload_triggered;
-    uint64_t cload_delay_cycles;
     bool started;
-    uint64_t start_cpu_cycles;
 } TapeState;
 
 static TapeState g_tape;
@@ -289,35 +289,126 @@ static void ay_check_control(void) {
 }
 
 /* ============================================================================
- * CASSETTE BITSTREAM ENCODER (Port B bit 3 et Port A bit 7)
+ * BUFFER DE SAISIE CLAVIER AUTOMATIQUE (AUTO-CLOAD NON-BLOQUANT)
  * ============================================================================ */
-static uint8_t get_cassette_bit(void) {
-    if (!g_tape.active || !g_tape.data || g_tape.size == 0 || !g_tape.started) return 0x00;
+static char g_typein_buffer[64] = {0};
+static int g_typein_pos = 0;
+static int g_typein_len = 0;
+static uint32_t g_typein_timer = 0;
+static int g_typein_row = -1;
+static int g_typein_col = -1;
 
-    uint64_t bit_period = 350; /* ~2400 baud */
-    uint64_t tape_cycles = (g_cpu.cycles >= g_tape.start_cpu_cycles) ? (g_cpu.cycles - g_tape.start_cpu_cycles) : 0;
-    uint64_t total_bits_elapsed = tape_cycles / bit_period;
-    
-    size_t bits_per_byte = 10;
-    size_t total_bits = g_tape.size * bits_per_byte;
-    size_t current_bit = total_bits_elapsed % total_bits;
+static void typein_queue(const char *str) {
+    if (!str) return;
+    int len = (int)strlen(str);
+    if (len >= 60) len = 60;
+    memcpy(g_typein_buffer, str, len);
+    g_typein_buffer[len] = 0;
+    g_typein_len = len;
+    g_typein_pos = 0;
+    g_typein_timer = 100000; /* Pause de 100ms avant la première touche */
+    g_typein_row = -1;
+    g_typein_col = -1;
+}
 
-    size_t byte_idx = current_bit / bits_per_byte;
-    size_t bit_idx = current_bit % bits_per_byte;
+static void typein_step(uint32_t cycles) {
+    if (g_typein_pos >= g_typein_len) return;
 
-    g_tape.pos = byte_idx;
+    if (g_typein_timer > cycles) {
+        g_typein_timer -= cycles;
+        return;
+    }
+    g_typein_timer = 0;
 
-    uint8_t b = g_tape.data[byte_idx];
-    int bit_val = 0;
-    if (bit_idx == 0) {
-        bit_val = 0; /* Start bit */
-    } else if (bit_idx >= 1 && bit_idx <= 8) {
-        bit_val = (b >> (bit_idx - 1)) & 1; /* Data bits */
-    } else {
-        bit_val = 1; /* Stop bit */
+    /* Si une touche était enfoncée, on la relâche */
+    if (g_typein_row >= 0) {
+        keyboard_set_key(g_typein_row, g_typein_col, false);
+        g_typein_row = -1;
+        g_typein_col = -1;
+        g_typein_timer = 50000; /* Pause de 50ms entre les touches */
+        g_typein_pos++;
+        return;
     }
 
-    return bit_val ? 0x88 : 0x00; /* Port B bit 3 (0x08) et Port A bit 7 (0x80) */
+    char ch = g_typein_buffer[g_typein_pos];
+    int row = -1, col = -1;
+    switch (ch) {
+        case 'c': case 'C': row = 2; col = 7; break;
+        case 'l': case 'L': row = 7; col = 1; break;
+        case 'o': case 'O': row = 5; col = 2; break;
+        case 'a': case 'A': row = 6; col = 5; break;
+        case 'd': case 'D': row = 1; col = 7; break;
+        case '"':           row = 3; col = 7; break;
+        case '\r': case '\n': row = 7; col = 5; break;
+    }
+
+    if (row >= 0 && col >= 0) {
+        g_typein_row = row;
+        g_typein_col = col;
+        keyboard_set_key(row, col, true);
+        g_typein_timer = 60000; /* Touche maintenue 60ms */
+    } else {
+        g_typein_pos++;
+    }
+}
+
+/* ============================================================================
+ * GESTIONNAIRE CASSETTE MATÉRIEL VIA CB1 (IFR bit 4 & Timer 2)
+ * ============================================================================ */
+static void tape_step(uint32_t cycles) {
+    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return;
+
+    bool motor_on = (g_via.orb & 0x40) != 0;
+    /* Le moteur est actif ou le chargement auto a débuté */
+    if (!motor_on && !g_tape.started) return;
+
+    if (!g_tape.started && motor_on) {
+        g_tape.started = true;
+        g_tape.bit_cycles_left = 350;
+        debug_log(L"Moteur cassette activé (Relais PB6) : Début du streaming CB1");
+    }
+
+    if (g_tape.byte_pos >= g_tape.size) return;
+
+    if (g_tape.bit_cycles_left <= cycles) {
+        /* Transition CB1 : active le flag IFR bit 4 (0x10) */
+        g_via.ifr |= 0x10;
+        if (g_via.ier & 0x10) {
+            g_cpu.irq_pending = true;
+        }
+
+        /* Passage au bit suivant */
+        g_tape.bit_in_byte++;
+        if (g_tape.bit_in_byte >= 13) {
+            g_tape.bit_in_byte = 0;
+            g_tape.byte_pos++;
+            if (g_tape.byte_pos >= g_tape.size) {
+                debug_log(L"Fin de la cassette (.TAP) atteinte (%u octets lus)", (unsigned)g_tape.size);
+                return;
+            }
+        }
+
+        uint8_t b = g_tape.data[g_tape.byte_pos];
+        int bit_val = 0;
+        if (g_tape.bit_in_byte == 0) {
+            bit_val = 0; /* Start bit (0) */
+        } else if (g_tape.bit_in_byte <= 8) {
+            bit_val = (b >> (g_tape.bit_in_byte - 1)) & 1; /* Bits de données 0..7 */
+        } else if (g_tape.bit_in_byte == 9) {
+            /* Bit de parité paire */
+            int ones = 0;
+            for (int k = 0; k < 8; k++) if ((b >> k) & 1) ones++;
+            bit_val = (ones & 1) ? 1 : 0;
+        } else {
+            bit_val = 1; /* Bits de stop (1, 1, 1) */
+        }
+
+        /* 350 cycles pour '1' (Timer 2 lit 0xFE), 650 cycles pour '0' (Timer 2 lit 0xFD) */
+        uint32_t period = bit_val ? 350 : 650;
+        g_tape.bit_cycles_left = period;
+    } else {
+        g_tape.bit_cycles_left -= cycles;
+    }
 }
 
 /* ============================================================================
@@ -345,12 +436,11 @@ static uint8_t mem_read(uint16_t addr) {
         uint8_t reg = addr & 0x0F;
         switch (reg) {
             case 0x00: {
+                g_via.ifr &= ~0x10; /* La lecture d'ORB acquitte CB1 */
                 uint8_t row = g_via.orb & 0x07;
                 uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
                 uint8_t key_bit = (g_key_matrix[row] & col_mask) ? 0x08 : 0x00;
-                uint8_t tape_bit = get_cassette_bit() & 0x08;
-                uint8_t combined = key_bit | tape_bit;
-                return (g_via.orb & g_via.ddrb) | (combined & ~g_via.ddrb);
+                return (g_via.orb & g_via.ddrb) | (key_bit & ~g_via.ddrb);
             }
             case 0x01:
             case 0x0F: {
@@ -359,9 +449,7 @@ static uint8_t mem_read(uint16_t addr) {
                 if (bc1 && !bdir) {
                     return g_ay.regs[g_ay.selected_reg & 0x0F];
                 }
-                uint8_t ora_val = g_via.ora;
-                uint8_t tape_bit_a = get_cassette_bit() & 0x80;
-                return (ora_val & g_via.ddra) | (tape_bit_a & ~g_via.ddra) | (~g_via.ddra & 0x7F);
+                return (g_via.ora & g_via.ddra) | (~g_via.ddra & 0xFF);
             }
             case 0x02: return g_via.ddrb;
             case 0x03: return g_via.ddra;
@@ -414,7 +502,10 @@ static void mem_write(uint16_t addr, uint8_t val) {
         if ((addr & 0xFFF0) != 0x0300) return;
         uint8_t reg = addr & 0x0F;
         switch (reg) {
-            case 0x00: g_via.orb = val; break;
+            case 0x00:
+                g_via.orb = val;
+                g_via.ifr &= ~0x10; /* L'écriture dans ORB acquitte CB1 */
+                break;
             case 0x01:
             case 0x0F:
                 g_via.ora = val;
@@ -434,6 +525,7 @@ static void mem_write(uint16_t addr, uint8_t val) {
             case 0x08: g_via.t2l = (g_via.t2l & 0xFF00) | val; break;
             case 0x09:
                 g_via.t2l = (g_via.t2l & 0x00FF) | ((uint16_t)val << 8);
+                if ((g_via.t2l & 0xFF) == 0) g_via.t2l |= 0xFF;
                 g_via.t2c = g_via.t2l;
                 g_via.ifr &= ~0x20;
                 g_via.t2_active = true;
@@ -490,21 +582,12 @@ static inline uint8_t cpu_pop(void) {
     /* Unused helper */
 
 static void cpu_step(void) {
-    /* Auto-CLOAD si un fichier TAP est chargé : tape "CLOAD\n" après boot BASIC */
+    /* Auto-CLOAD si un fichier TAP est chargé : lance la frappe de "CLOAD\r" après le boot */
     if (g_tape.active && !g_tape.auto_cload_triggered) {
         if (g_cpu.cycles > 1200000) { /* ~1.2 seconde après le démarrage BASIC */
             g_tape.auto_cload_triggered = true;
-            g_tape.started = true;
-            g_tape.start_cpu_cycles = g_cpu.cycles;
-            debug_log(L"Auto-CLOAD : Démarrage du chargement de la cassette (.TAP)");
-            /* Injecter "CLOAD\r" dans le buffer clavier ou simuler les touches */
-            keyboard_handle_char(L'c'); Sleep(30);
-            keyboard_handle_char(L'l'); Sleep(30);
-            keyboard_handle_char(L'o'); Sleep(30);
-            keyboard_handle_char(L'a'); Sleep(30);
-            keyboard_handle_char(L'd'); Sleep(30);
-            keyboard_handle_vk(VK_RETURN, true); Sleep(30);
-            keyboard_handle_vk(VK_RETURN, false);
+            typein_queue("CLOAD\r");
+            debug_log(L"Auto-CLOAD : Lancement de la saisie automatique de CLOAD");
         }
     }
 
@@ -775,9 +858,12 @@ static void via_reset(void) {
     memset(&g_via, 0, sizeof(g_via));
     g_via.t1l = 0x2710;
     g_via.t1c = g_via.t1l;
+    g_via.t2l = 0xFFFF;
+    g_via.t2c = 0xFFFF;
     g_via.ier = 0x40;
     g_via.pcr = 0xCC;
     g_via.t1_active = true;
+    g_via.t2_active = true;
     g_microdis_control = 0x04; /* Microdisc ROM désactivée par défaut au démarrage */
 }
 
@@ -794,11 +880,14 @@ static void via_step(uint32_t cycles) {
     if (g_via.t2_active) {
         if (g_via.t2c <= cycles) {
             g_via.ifr |= 0x20;
-            g_via.t2c = 0xFFFF;
+            g_via.t2c = 0xFFFF - (cycles - g_via.t2c);
         } else {
             g_via.t2c -= cycles;
         }
     }
+
+    tape_step(cycles);
+    typein_step(cycles);
 
     g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
 }
@@ -1010,11 +1099,18 @@ static void oric_load_tap_file(const wchar_t *filename) {
     }
     g_tape.data = buf;
     g_tape.size = fsize;
-    g_tape.pos = 0;
+    g_tape.byte_pos = 0;
+    g_tape.bit_in_byte = 0;
+    g_tape.bit_cycles_left = 350;
     g_tape.active = true;
     g_tape.auto_cload_triggered = false;
     g_tape.started = false;
-    g_tape.start_cpu_cycles = 0;
+
+    if (g_cpu.cycles > 1200000) {
+        g_tape.auto_cload_triggered = true;
+        typein_queue("CLOAD\r");
+        debug_log(L"Auto-CLOAD : Fichier TAP chargé en cours d'exécution, saisie de CLOAD");
+    }
 
     // Extraire le nom du premier bloc pour l'affichage
     size_t ptr = 0;
