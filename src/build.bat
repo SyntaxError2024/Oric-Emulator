@@ -7,10 +7,14 @@ echo.
 
 set app="oric_atmos.exe"
 
-taskkill /F /im %app%
+taskkill /F /im %app% 2>nul
 
-del %app%
+del %app% 2>nul
 
-gcc -O3 oric_win32.c -o %app% -municode -lgdi32 -lwinmm -lshell32
+gcc -O3 common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o %app% -municode -lgdi32 -lwinmm -lshell32
 
-echo Compilation terminee avec succes !
+if %errorlevel% equ 0 (
+    echo Compilation terminee avec succes !
+) else (
+    echo Erreur lors de la compilation !
+)
