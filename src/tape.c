@@ -47,11 +47,11 @@ bool tape_load_file(const wchar_t *filename) {
     g_tape.bit_in_byte = 0;
     g_tape.bit_cycles_left = 350;
     g_tape.active = true;
-    g_tape.auto_cload_triggered = false;
+    g_tape.auto_cload_triggered = true;
     g_tape.started = false;
     memset(g_tape.current_name, 0, sizeof(g_tape.current_name));
 
-    /* Extraction du nom du premier bloc */
+    /* Extraction du nom du premier bloc dans le fichier .TAP */
     size_t ptr = 0;
     while (ptr < fsize && buf[ptr] != 0x24) ptr++;
     if (ptr < fsize) {
@@ -68,18 +68,35 @@ bool tape_load_file(const wchar_t *filename) {
         }
     }
 
-    /* Injection automatique de CLOAD */
-    typein_queue("CLOAD\r");
-    debug_log(L"Auto-CLOAD enclenché : saisie de 'CLOAD\\r'");
+    /* Injection automatique de CLOAD "" */
+    typein_queue("CLOAD \"\"\r");
+    debug_log(L"Auto-CLOAD enclenché : saisie automatique de 'CLOAD \"\"\\r'");
 
     return true;
 }
 
 bool tape_hook_byte(uint8_t *out_byte) {
-    if (!g_tape.active || !g_tape.data || g_tape.byte_pos >= g_tape.size) {
+    if (!g_tape.data || g_tape.size == 0) {
         return false;
     }
+
+    /* Rembobinage automatique si la cassette était terminée et que le moteur tourne */
+    if (g_tape.byte_pos >= g_tape.size) {
+        bool motor_on = (g_via.orb & 0x40) != 0;
+        if (motor_on) {
+            g_tape.byte_pos = 0;
+            g_tape.active = true;
+            g_tape.started = true;
+            debug_log(L"Rembobinage automatique de la cassette au début");
+        } else {
+            return false;
+        }
+    }
+
+    if (!g_tape.active) return false;
+
     *out_byte = g_tape.data[g_tape.byte_pos++];
+
     if (g_tape.byte_pos >= g_tape.size) {
         debug_log(L"Fin de la cassette atteinte (%u octets transférés)", (unsigned)g_tape.size);
         g_tape.active = false;
@@ -89,55 +106,64 @@ bool tape_hook_byte(uint8_t *out_byte) {
 }
 
 bool tape_hook_sync(void) {
-    if (!g_tape.active || !g_tape.data || g_tape.byte_pos >= g_tape.size) {
+    if (!g_tape.data || g_tape.size == 0) {
         return false;
     }
-    /* Recherche de la prochaine synchro 0x16 dans le flux */
+
+    /* Rembobinage automatique si une nouvelle commande CLOAD démarre */
+    if (g_tape.byte_pos >= g_tape.size) {
+        bool motor_on = (g_via.orb & 0x40) != 0;
+        if (motor_on) {
+            g_tape.byte_pos = 0;
+            g_tape.active = true;
+            g_tape.started = true;
+            debug_log(L"Rembobinage automatique pour nouvelle recherche de bloc");
+        } else {
+            return false;
+        }
+    }
+
+    if (!g_tape.active) return false;
+
+    /* Recherche de la prochaine séquence de synchronisation 0x16 dans le flux */
     while (g_tape.byte_pos < g_tape.size && g_tape.data[g_tape.byte_pos] != 0x16) {
         g_tape.byte_pos++;
     }
+
     if (g_tape.byte_pos < g_tape.size && g_tape.data[g_tape.byte_pos] == 0x16) {
+        debug_log(L"Synchronisation K7 trouvée à l'octet %u (reste %u octets)",
+                  (unsigned)g_tape.byte_pos, (unsigned)(g_tape.size - g_tape.byte_pos));
         return true;
     }
     return false;
 }
 
-bool tape_hook_bit(uint8_t *out_bit) {
-    if (!g_tape.active || !g_tape.data || g_tape.byte_pos >= g_tape.size) {
-        return false;
-    }
-    *out_bit = (g_tape.data[g_tape.byte_pos] >> g_tape.bit_in_byte) & 1;
-    g_tape.bit_in_byte++;
-    if (g_tape.bit_in_byte >= 8) {
-        g_tape.bit_in_byte = 0;
-        g_tape.byte_pos++;
-        if (g_tape.byte_pos >= g_tape.size) {
-            g_tape.active = false;
-            g_tape.started = false;
-        }
-    }
-    return true;
-}
-
 void tape_step(uint32_t cycles) {
-    if (!g_tape.active || !g_tape.data || g_tape.size == 0) return;
+    if (!g_tape.data || g_tape.size == 0) return;
 
     bool motor_on = (g_via.orb & 0x40) != 0;
-    if (!motor_on && !g_tape.started) return;
+    if (motor_on) {
+        if (!g_tape.active || g_tape.byte_pos >= g_tape.size) {
+            /* Rembobinage automatique lors de l'activation du relais moteur */
+            g_tape.byte_pos = 0;
+            g_tape.active = true;
+            g_tape.started = true;
+            g_tape.bit_cycles_left = 350;
+            debug_log(L"Moteur cassette activé (Relais PB6) : rembobinage au début");
+        } else if (!g_tape.started) {
+            g_tape.started = true;
+            g_tape.bit_cycles_left = 350;
+            debug_log(L"Moteur cassette activé (Relais PB6)");
+        }
 
-    if (!g_tape.started && motor_on) {
-        g_tape.started = true;
-        g_tape.bit_cycles_left = 350;
-        debug_log(L"Moteur cassette activé (Relais PB6)");
-    }
-
-    if (g_tape.byte_pos >= g_tape.size) return;
-
-    if (g_tape.bit_cycles_left <= cycles) {
-        /* Impulsion CB1 pour signaux matériels */
-        g_via.ifr |= 0x10;
-        g_tape.bit_cycles_left = 400;
+        /* Génération des impulsions de transition CB1 pour les boucles VIA directes */
+        if (g_tape.bit_cycles_left <= cycles) {
+            g_via.ifr |= 0x10; /* Transition détectée sur ligne CB1 */
+            g_tape.bit_cycles_left = 350;
+        } else {
+            g_tape.bit_cycles_left -= cycles;
+        }
     } else {
-        g_tape.bit_cycles_left -= cycles;
+        g_tape.started = false;
     }
 }

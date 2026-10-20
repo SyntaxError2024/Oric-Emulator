@@ -40,17 +40,17 @@ void cpu_reset(void) {
 }
 
 void cpu_step(void) {
-    /* Auto-CLOAD si un fichier TAP est chargé : saisie automatique de CLOAD au démarrage */
+    /* Auto-CLOAD si un fichier TAP a été préchargé au démarrage */
     if (g_tape.active && !g_tape.auto_cload_triggered) {
         if (g_cpu.cycles > 1200000) { /* ~1.2s après boot BASIC */
             g_tape.auto_cload_triggered = true;
-            typein_queue("CLOAD\r");
-            debug_log(L"Auto-CLOAD déclenché après boot BASIC");
+            typein_queue("CLOAD \"\"\r");
+            debug_log(L"Auto-CLOAD déclenché après boot BASIC : saisie de 'CLOAD \"\"\\r'");
         }
     }
 
     /* --- HOOKS DE CHARGEMENT K7 ORIC ATMOS --- */
-    if (g_tape.active && g_tape.data) {
+    if (g_tape.data) {
         /* Hook 0xE6C9: RDBYTE (Lecture d'un octet de données depuis la K7) */
         if (g_cpu.pc == 0xE6C9) {
             uint8_t b = 0;
@@ -59,6 +59,7 @@ void cpu_step(void) {
                 mem_write(0x2F, b);
                 g_cpu.p &= ~FLAG_C;
                 cpu_set_nz(b);
+                g_via.ifr &= ~0x10;
                 uint16_t lo = cpu_pop();
                 uint16_t hi = cpu_pop();
                 g_cpu.pc = (lo | ((uint16_t)hi << 8)) + 1;
@@ -70,27 +71,10 @@ void cpu_step(void) {
         else if (g_cpu.pc == 0xE735) {
             if (tape_hook_sync()) {
                 g_cpu.a = 0x16;
+                g_cpu.x = 0; /* Important: X=0 pour que le registre d'erreur $02B1 soit initialisé à 0 */
                 mem_write(0x2F, 0x16);
                 g_cpu.p &= ~FLAG_C;
                 cpu_set_nz(0x16);
-                uint16_t lo = cpu_pop();
-                uint16_t hi = cpu_pop();
-                g_cpu.pc = (lo | ((uint16_t)hi << 8)) + 1;
-                g_cpu.cycles += 30;
-                return;
-            }
-        }
-        /* Hook 0xE71C: RDBIT (Lecture d'un bit de signal série K7) */
-        else if (g_cpu.pc == 0xE71C) {
-            uint8_t bit = 1;
-            if (tape_hook_bit(&bit)) {
-                if (bit) {
-                    g_cpu.p |= FLAG_C;
-                    g_via.t2c = 0xFE00;
-                } else {
-                    g_cpu.p &= ~FLAG_C;
-                    g_via.t2c = 0xFD00;
-                }
                 g_via.ifr &= ~0x10;
                 uint16_t lo = cpu_pop();
                 uint16_t hi = cpu_pop();
@@ -100,6 +84,7 @@ void cpu_step(void) {
             }
         }
     }
+
 
     if (g_cpu.nmi_pending) {
         g_cpu.nmi_pending = false;

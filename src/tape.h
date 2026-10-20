@@ -25,9 +25,8 @@ bool tape_load_file(const wchar_t *filename);
 /* Hooks ROM pour chargement fiable et instantané */
 bool tape_hook_byte(uint8_t *out_byte);
 bool tape_hook_sync(void);
-bool tape_hook_bit(uint8_t *out_bit);
 
-/* Émulation temporelle de la ligne CB1 si sollicitée */
+/* Émulation temporelle de la ligne CB1 vers le VIA 6522 */
 void tape_step(uint32_t cycles);
 
 #endif /* TAPE_H */
