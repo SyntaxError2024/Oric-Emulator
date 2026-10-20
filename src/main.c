@@ -213,21 +213,16 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     }
 
     if (!rom_explicitly_loaded) {
-        oric_load_rom(L"atmos.rom");
-    }
-
-    if (!g_rom_loaded) {
-        debug_log(L"Avertissement : atmos.rom introuvable, tentative avec 110fr.rom");
-        oric_load_rom(L"110fr.rom");
+        oric_load_rom(L"./roms/atmos.rom");
     }
 
     /* Charger automatiquement MICRODIS.ROM s'il est présent */
-    oric_load_microdis_rom(L"MICRODIS.ROM");
+    oric_load_microdis_rom(L"./roms/MICRODIS.ROM");
 
     if (!g_rom_loaded) {
         debug_log(L"Erreur : Aucune ROM trouvée dans le répertoire courant !");
         MessageBoxW(NULL,
-            L"Impossible de trouver 'atmos.rom' ou '110fr.rom' dans le dossier courant.",
+            L"Impossible de trouver 'atmos.rom'.",
             L"ROM non trouvée", MB_OK | MB_ICONWARNING);
     }
 
