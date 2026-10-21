@@ -351,6 +351,28 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
     (void)hPrevInstance;
+
+    wchar_t path[MAX_PATH];
+
+    DWORD n = GetModuleFileNameW(NULL, path, MAX_PATH);
+
+    if (n == 0 || n >= MAX_PATH)
+        return 1;
+    
+    
+
+    wchar_t *slash = wcsrchr(path, L'\\');
+    
+    if (slash == NULL)
+        return 1;
+
+    // *slash = L'\0';
+
+    *slash=0;
+
+    if (!SetCurrentDirectoryW(path))
+        return 1;
+
     return run_emulator(hInstance, lpCmdLine, nCmdShow);
 }
 
