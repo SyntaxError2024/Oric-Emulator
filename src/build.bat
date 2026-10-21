@@ -11,7 +11,7 @@ taskkill /F /im %app% 2>nul
 
 del %app% 2>nul
 
-gcc -O3 common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o %app% -municode -lgdi32 -lwinmm -lshell32
+gcc -O3 -municode -mwindows common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o %app% -lgdi32 -lwinmm -lshell32
 
 if %errorlevel% equ 0 (
     echo Compilation terminee avec succes !

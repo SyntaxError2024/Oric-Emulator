@@ -354,8 +354,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     return run_emulator(hInstance, lpCmdLine, nCmdShow);
 }
 
+/*
 int wmain(int argc, wchar_t *argv[]) {
     HINSTANCE hInst = GetModuleHandleW(NULL);
     const wchar_t *real_arg = (argc > 1) ? argv[1] : L"";
     return run_emulator(hInst, real_arg, SW_SHOWNORMAL);
 }
+*/
