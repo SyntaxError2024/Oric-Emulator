@@ -9,10 +9,39 @@ void tape_init(void) {
 }
 
 void tape_reset(void) {
-    g_tape.byte_pos = 0;
-    g_tape.bit_in_byte = 0;
-    g_tape.started = false;
+    g_tape.pulse_pos = 0;
+    g_tape.bit_cycles_left = 350;
     g_tape.auto_cload_triggered = false;
+}
+
+static void add_pulse_bit(uint8_t **buf, size_t *count, size_t *cap, uint8_t bit) {
+    if (*count >= *cap) {
+        *cap = (*cap == 0) ? 65536 : (*cap * 2);
+        *buf = (uint8_t *)realloc(*buf, *cap);
+    }
+    (*buf)[(*count)++] = bit ? 1 : 0;
+}
+
+static void add_pulse_byte(uint8_t **buf, size_t *count, size_t *cap, uint8_t b) {
+    /* 1. Bit de start (0 / impulsion longue 650 cycles) */
+    add_pulse_bit(buf, count, cap, 0);
+
+    /* 2. 8 bits de données (poids faible en premier) */
+    int ones = 0;
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (b >> i) & 1;
+        ones += bit;
+        add_pulse_bit(buf, count, cap, bit);
+    }
+
+    /* 3. Bit de parité impaire : nombre total de 1 (données + parité) est toujours impair */
+    uint8_t par = (ones ^ 1) & 1;
+    add_pulse_bit(buf, count, cap, par);
+
+    /* 4. 4 bits de stop (1 / impulsion courte 350 cycles) */
+    for (int i = 0; i < 4; i++) {
+        add_pulse_bit(buf, count, cap, 1);
+    }
 }
 
 bool tape_load_file(const wchar_t *filename) {
@@ -25,145 +54,165 @@ bool tape_load_file(const wchar_t *filename) {
     }
 
     fseek(f, 0, SEEK_END);
-    size_t fsize = ftell(f);
+    size_t fsize = (size_t)ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    uint8_t *buf = (uint8_t *)malloc(fsize);
-    if (!buf) {
+    uint8_t *raw_buf = (uint8_t *)malloc(fsize);
+    if (!raw_buf) {
         fclose(f);
         return false;
     }
-    fread(buf, 1, fsize, f);
+
+    fread(raw_buf, 1, fsize, f);
     fclose(f);
 
     debug_log(L"Fichier .TAP chargé : %ls (Taille: %u octets)", filename, (unsigned)fsize);
 
-    if (g_tape.data) {
-        free(g_tape.data);
+    /* Libération de l'ancien flux d'impulsions */
+    if (g_tape.pulse_buf) {
+        free(g_tape.pulse_buf);
+        g_tape.pulse_buf = NULL;
     }
-    g_tape.data = buf;
-    g_tape.size = fsize;
-    g_tape.byte_pos = 0;
-    g_tape.bit_in_byte = 0;
-    g_tape.bit_cycles_left = 350;
-    g_tape.active = true;
-    g_tape.auto_cload_triggered = true;
-    g_tape.started = false;
+
+    /* Construction du flux d'impulsions conforme au décodage matériel Oric Atmos */
+    size_t cap = (fsize + 512) * 14 + 10000;
+    size_t count = 0;
+    uint8_t *pulses = (uint8_t *)malloc(cap);
+    if (!pulses) {
+        free(raw_buf);
+        return false;
+    }
+
     memset(g_tape.current_name, 0, sizeof(g_tape.current_name));
+    bool first_name_extracted = false;
 
-    /* Extraction du nom du premier bloc dans le fichier .TAP */
     size_t ptr = 0;
-    while (ptr < fsize && buf[ptr] != 0x24) ptr++;
-    if (ptr < fsize) {
-        ptr++;
-        if (ptr + 9 <= fsize) {
-            ptr += 9;
-            char bname[32] = {0};
-            int ni = 0;
-            while (ptr < fsize && buf[ptr] != 0 && ni < 31) {
-                bname[ni++] = (char)buf[ptr++];
+    while (ptr < fsize) {
+        /* Recherche de la séquence de synchronisation (0x16 ... 0x24) */
+        while (ptr < fsize && raw_buf[ptr] != 0x16) {
+            ptr++;
+        }
+        if (ptr >= fsize) break;
+
+        /* Tonalité d'amorce (bits 1) */
+        for (int i = 0; i < 200; i++) {
+            add_pulse_bit(&pulses, &count, &cap, 1);
+        }
+
+        /* 16 octets 0x16 pour synchronisation infaillible de la ROM */
+        for (int i = 0; i < 16; i++) {
+            add_pulse_byte(&pulses, &count, &cap, 0x16);
+        }
+
+        /* Consomme les octets 0x16 initiaux présents dans le fichier */
+        while (ptr < fsize && raw_buf[ptr] == 0x16) {
+            ptr++;
+        }
+        if (ptr >= fsize) break;
+
+        /* Marqueur de début d'en-tête 0x24 */
+        if (raw_buf[ptr] == 0x24) {
+            add_pulse_byte(&pulses, &count, &cap, 0x24);
+            ptr++;
+        } else {
+            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
+            continue;
+        }
+
+        /* 9 octets d'en-tête (type, autorun, adresses début et fin) */
+        for (int i = 0; i < 9; i++) {
+            if (ptr < fsize) {
+                add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
             }
-            ansi_to_wide(bname, (wchar_t *)g_tape.current_name, 32);
-            debug_log(L"Programme K7 détecté : \"%ls\"", (wchar_t *)g_tape.current_name);
+        }
+
+        /* Nom du fichier jusqu'à l'octet nul 0x00 */
+        char block_name[32] = {0};
+        int bni = 0;
+        while (ptr < fsize && raw_buf[ptr] != 0) {
+            if (bni < 31) block_name[bni++] = (char)raw_buf[ptr];
+            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
+        }
+        if (ptr < fsize && raw_buf[ptr] == 0) {
+            add_pulse_byte(&pulses, &count, &cap, 0);
+            ptr++;
+        }
+
+        if (!first_name_extracted) {
+            ansi_to_wide(block_name, (wchar_t *)g_tape.current_name, 32);
+            debug_log(L"Nom K7 détecté : \"%ls\"", (wchar_t *)g_tape.current_name);
+            first_name_extracted = true;
+        }
+
+        /* Pause inter-bloc (bits 1) : laisse le temps à la ROM d'afficher \"Loading <nom>\" */
+        for (int i = 0; i < 60; i++) {
+            add_pulse_bit(&pulses, &count, &cap, 1);
+        }
+
+        /* Données du bloc jusqu'au prochain préambule (0x16 0x16) ou EOF */
+        while (ptr < fsize) {
+            if (ptr + 2 < fsize && raw_buf[ptr] == 0x16 && raw_buf[ptr + 1] == 0x16) {
+                break;
+            }
+            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
+        }
+
+        /* Pause de fin de bloc */
+        for (int i = 0; i < 100; i++) {
+            add_pulse_bit(&pulses, &count, &cap, 1);
         }
     }
 
-    /* Injection automatique de CLOAD "" */
-    typein_queue("CLOAD \"\"\r");
-    debug_log(L"Auto-CLOAD enclenché : saisie automatique de 'CLOAD \"\"\\r'");
+    free(raw_buf);
+
+    g_tape.pulse_buf = pulses;
+    g_tape.pulse_count = count;
+    g_tape.pulse_pos = 0;
+    g_tape.bit_cycles_left = 350;
+    g_tape.loaded = true;
+    g_tape.auto_cload_triggered = true;
+
+    debug_log(L"Flux K7 matériel généré avec succès (%u impulsions)", (unsigned)count);
+
+    /* Enclenchement automatique de cload\"\" */
+    typein_queue("cload\"\"\r");
+    debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
 
     return true;
-}
-
-bool tape_hook_byte(uint8_t *out_byte) {
-    if (!g_tape.data || g_tape.size == 0) {
-        return false;
-    }
-
-    /* Rembobinage automatique si la cassette était terminée et que le moteur tourne */
-    if (g_tape.byte_pos >= g_tape.size) {
-        bool motor_on = (g_via.orb & 0x40) != 0;
-        if (motor_on) {
-            g_tape.byte_pos = 0;
-            g_tape.active = true;
-            g_tape.started = true;
-            debug_log(L"Rembobinage automatique de la cassette au début");
-        } else {
-            return false;
-        }
-    }
-
-    if (!g_tape.active) return false;
-
-    *out_byte = g_tape.data[g_tape.byte_pos++];
-
-    if (g_tape.byte_pos >= g_tape.size) {
-        debug_log(L"Fin de la cassette atteinte (%u octets transférés)", (unsigned)g_tape.size);
-        g_tape.active = false;
-        g_tape.started = false;
-    }
-    return true;
-}
-
-bool tape_hook_sync(void) {
-    if (!g_tape.data || g_tape.size == 0) {
-        return false;
-    }
-
-    /* Rembobinage automatique si une nouvelle commande CLOAD démarre */
-    if (g_tape.byte_pos >= g_tape.size) {
-        bool motor_on = (g_via.orb & 0x40) != 0;
-        if (motor_on) {
-            g_tape.byte_pos = 0;
-            g_tape.active = true;
-            g_tape.started = true;
-            debug_log(L"Rembobinage automatique pour nouvelle recherche de bloc");
-        } else {
-            return false;
-        }
-    }
-
-    if (!g_tape.active) return false;
-
-    /* Recherche de la prochaine séquence de synchronisation 0x16 dans le flux */
-    while (g_tape.byte_pos < g_tape.size && g_tape.data[g_tape.byte_pos] != 0x16) {
-        g_tape.byte_pos++;
-    }
-
-    if (g_tape.byte_pos < g_tape.size && g_tape.data[g_tape.byte_pos] == 0x16) {
-        debug_log(L"Synchronisation K7 trouvée à l'octet %u (reste %u octets)",
-                  (unsigned)g_tape.byte_pos, (unsigned)(g_tape.size - g_tape.byte_pos));
-        return true;
-    }
-    return false;
 }
 
 void tape_step(uint32_t cycles) {
-    if (!g_tape.data || g_tape.size == 0) return;
+    if (!g_tape.loaded || !g_tape.pulse_buf || g_tape.pulse_count == 0) return;
 
+    /* Le relais moteur de la cassette est commandé par le bit PB6 du VIA */
     bool motor_on = (g_via.orb & 0x40) != 0;
-    if (motor_on) {
-        if (!g_tape.active || g_tape.byte_pos >= g_tape.size) {
-            /* Rembobinage automatique lors de l'activation du relais moteur */
-            g_tape.byte_pos = 0;
-            g_tape.active = true;
-            g_tape.started = true;
-            g_tape.bit_cycles_left = 350;
-            debug_log(L"Moteur cassette activé (Relais PB6) : rembobinage au début");
-        } else if (!g_tape.started) {
-            g_tape.started = true;
-            g_tape.bit_cycles_left = 350;
-            debug_log(L"Moteur cassette activé (Relais PB6)");
-        }
+    if (!motor_on) return;
 
-        /* Génération des impulsions de transition CB1 pour les boucles VIA directes */
-        if (g_tape.bit_cycles_left <= cycles) {
-            g_via.ifr |= 0x10; /* Transition détectée sur ligne CB1 */
-            g_tape.bit_cycles_left = 350;
+    /* Rembobinage automatique si la bande était terminée */
+    if (g_tape.pulse_pos >= g_tape.pulse_count) {
+        g_tape.pulse_pos = 0;
+        g_tape.bit_cycles_left = 350;
+        debug_log(L"Moteur cassette activé : rembobinage automatique au début");
+    }
+
+    g_tape.bit_cycles_left -= (int32_t)cycles;
+    while (g_tape.bit_cycles_left <= 0 && g_tape.pulse_pos < g_tape.pulse_count) {
+        /* Transition active détectée sur la broche CB1 du VIA 6522 */
+        g_via.ifr |= 0x10;
+
+        uint8_t bit = g_tape.pulse_buf[g_tape.pulse_pos++];
+        if (bit) {
+            /* Bit 1 (période courte ~350 cycles) :
+             * Timer 2 High = 0xFE -> dans la routine ROM ($E731 CMP #$FE)
+             * la retenue CARRY est mise à 1. */
+            g_via.t2c = 0xFE50;
+            g_tape.bit_cycles_left += 350;
         } else {
-            g_tape.bit_cycles_left -= cycles;
+            /* Bit 0 (période longue ~650 cycles) :
+             * Timer 2 High = 0xFD -> dans la routine ROM ($E731 CMP #$FE)
+             * la retenue CARRY est mise à 0. */
+            g_via.t2c = 0xFD50;
+            g_tape.bit_cycles_left += 650;
         }
-    } else {
-        g_tape.started = false;
     }
 }

@@ -242,6 +242,19 @@ void keyboard_handle_vk(UINT vk, bool pressed) {
 /* ============================================================================
  * SAISIE AUTOMATIQUE (AUTO-CLOAD & COMMANDES)
  * ============================================================================ */
+void keyboard_queue_char(char ch) {
+    if (g_typein_len >= 126) return;
+    if (g_typein_pos >= g_typein_len) {
+        g_typein_pos = 0;
+        g_typein_len = 0;
+    }
+    g_typein_buffer[g_typein_len++] = ch;
+    g_typein_buffer[g_typein_len] = 0;
+    if (g_typein_row < 0 && g_typein_timer == 0) {
+        g_typein_timer = 2000;
+    }
+}
+
 void typein_queue(const char *str) {
     if (!str) return;
     int len = (int)strlen(str);

@@ -149,8 +149,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             keyboard_handle_vk((UINT)wParam, false);
             return 0;
 
-        case WM_CHAR:
+        case WM_CHAR: {
+            wchar_t wch = (wchar_t)wParam;
+            if (wch >= 32 && wch <= 126) {
+                keyboard_queue_char((char)wch);
+            } else if (wch == L'\r' || wch == L'\n') {
+                keyboard_queue_char('\r');
+            } else if (wch == 8) {
+                keyboard_queue_char('\x08');
+            } else if (wch == 27) {
+                keyboard_queue_char('\x1b');
+            }
             return 0;
+        }
 
         case WM_SETFOCUS:
             return 0;
@@ -310,8 +321,10 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
 
         if (!running) break;
 
-        /* Émulation de la trame 50Hz (20 000 cycles CPU) */
-        uint64_t target_cycles = g_cpu.cycles + CYCLES_PER_FRAME;
+        /* Émulation de la trame 50Hz (accélération turbo x15 pendant lecture cassette) */
+        bool tape_running = (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);
+        uint32_t frame_cycles = tape_running ? (CYCLES_PER_FRAME * 15) : CYCLES_PER_FRAME;
+        uint64_t target_cycles = g_cpu.cycles + frame_cycles;
         while (g_cpu.cycles < target_cycles) {
             uint64_t before = g_cpu.cycles;
             cpu_step();
