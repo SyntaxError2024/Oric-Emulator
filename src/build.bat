@@ -11,7 +11,16 @@ taskkill /F /im %app% 2>nul
 
 del %app% 2>nul
 
-gcc -O3 -municode -mwindows common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o %app% -lgdi32 -lwinmm -lshell32
+rem -O3       : active des optimisations poussées
+rem -s        : supprime les symboles de débogage du fichier final
+rem -static   : lie statiquement les bibliothèques lorsque possible
+rem -municode : sélectionne le point d'entrée Unicode, ici wWinMain
+rem -mwindows : crée une application graphique sans fenêtre console
+rem -lgdi32   : lie la bibliothèque graphique Windows GDI
+rem -lwinmm   : lie la bibliothèque multimédia Windows
+rem -lshell32 : lie la bibliothèque Windows Shell
+
+gcc -O3 -s -static -municode -mwindows common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o %app% -lgdi32 -lwinmm -lshell32
 
 if %errorlevel% equ 0 (
     echo Compilation terminee avec succes !
