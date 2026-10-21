@@ -34,7 +34,7 @@ static void add_pulse_byte(uint8_t **buf, size_t *count, size_t *cap, uint8_t b)
         add_pulse_bit(buf, count, cap, bit);
     }
 
-    /* 3. Bit de parité impaire : nombre total de '1' (données + parité) est impair */
+    /* 3. Bit de parité impaire : nombre total de 1 (données + parité) est toujours impair */
     uint8_t par = (ones ^ 1) & 1;
     add_pulse_bit(buf, count, cap, par);
 
@@ -74,8 +74,8 @@ bool tape_load_file(const wchar_t *filename) {
         g_tape.pulse_buf = NULL;
     }
 
-    /* Construction du flux d'impulsions conforme au format matériel Oric */
-    size_t cap = (fsize + 512) * 14 + 10000;
+    /* Construction du flux d'impulsions conforme au décodage matériel Oric Atmos */
+    size_t cap = (fsize + 1024) * 14 + 30000;
     size_t count = 0;
     uint8_t *pulses = (uint8_t *)malloc(cap);
     if (!pulses) {
@@ -88,53 +88,32 @@ bool tape_load_file(const wchar_t *filename) {
 
     size_t ptr = 0;
     while (ptr < fsize) {
-        /* Recherche du préambule de synchronisation (0x16 ... 0x24) */
-        while (ptr < fsize && raw_buf[ptr] != 0x16) {
-            ptr++;
-        }
+        /* Recherche de la séquence de synchronisation (0x16 ... 0x24) */
+        while (ptr < fsize && raw_buf[ptr] != 0x16) ptr++;
         if (ptr >= fsize) break;
 
-        /* Tonalité d'amorce (bits 1) pour laisser le temps au moteur et à la ROM */
-        for (int i = 0; i < 200; i++) {
-            add_pulse_bit(&pulses, &count, &cap, 1);
-        }
-
-        /* 16 octets de synchronisation 0x16 pour verrouillage infaillible de la ROM Atmos */
-        for (int i = 0; i < 16; i++) {
-            add_pulse_byte(&pulses, &count, &cap, 0x16);
-        }
-
-        /* Consomme les octets 0x16 initiaux présents dans le fichier .TAP */
-        while (ptr < fsize && raw_buf[ptr] == 0x16) {
-            ptr++;
-        }
+        while (ptr < fsize && raw_buf[ptr] == 0x16) ptr++;
         if (ptr >= fsize) break;
 
-        /* Marqueur de début d'en-tête 0x24 */
-        if (raw_buf[ptr] == 0x24) {
-            add_pulse_byte(&pulses, &count, &cap, 0x24);
+        if (raw_buf[ptr] != 0x24) {
             ptr++;
-        } else {
-            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
             continue;
         }
+        ptr++; /* Saut du marqueur 0x24 */
 
-        /* 9 octets d'en-tête (type, auto-run, adresses début et fin) */
-        for (int i = 0; i < 9; i++) {
-            if (ptr < fsize) {
-                add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
-            }
-        }
+        if (ptr + 9 > fsize) break;
+        uint8_t hdr[9];
+        memcpy(hdr, &raw_buf[ptr], 9);
+        ptr += 9;
 
-        /* Nom du fichier jusqu'à l'octet nul 0x00 */
+        /* Extraction du nom du bloc jusqu'à 0x00 */
         char block_name[32] = {0};
         int bni = 0;
         while (ptr < fsize && raw_buf[ptr] != 0) {
             if (bni < 31) block_name[bni++] = (char)raw_buf[ptr];
-            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
+            ptr++;
         }
         if (ptr < fsize && raw_buf[ptr] == 0) {
-            add_pulse_byte(&pulses, &count, &cap, 0);
             ptr++;
         }
 
@@ -144,20 +123,60 @@ bool tape_load_file(const wchar_t *filename) {
             first_name_extracted = true;
         }
 
-        /* Pause inter-bloc (bits 1) : permet à la ROM d'afficher "Loading <nom>" */
-        for (int i = 0; i < 60; i++) {
+        /* Détection de la position du bloc suivant pour déterminer la longueur exacte des données */
+        size_t next_sync = fsize;
+        for (size_t p = ptr; p + 2 < fsize; p++) {
+            if (raw_buf[p] == 0x16 && raw_buf[p+1] == 0x16 &&
+               (raw_buf[p+2] == 0x24 || (p + 3 < fsize && raw_buf[p+2] == 0x16 && raw_buf[p+3] == 0x24))) {
+                next_sync = p;
+                break;
+            }
+        }
+        size_t actual_data_len = next_sync - ptr;
+
+        /* Calcul de la longueur attendue par la ROM d'après l'en-tête (adresses de début et fin) */
+        uint16_t end_addr   = (uint16_t)((hdr[4] << 8) | hdr[5]);
+        uint16_t start_addr = (uint16_t)((hdr[6] << 8) | hdr[7]);
+        size_t expected_len = (end_addr >= start_addr) ? (size_t)(end_addr - start_addr + 1) : actual_data_len;
+        size_t bytes_to_emit = (actual_data_len > expected_len) ? actual_data_len : expected_len;
+
+        /* 1. Tonalité d'amorce (200 bits 1) */
+        for (int i = 0; i < 200; i++) {
             add_pulse_bit(&pulses, &count, &cap, 1);
         }
 
-        /* Octets de données du bloc jusqu'au prochain préambule 0x16 ou EOF */
-        while (ptr < fsize) {
-            if (ptr + 2 < fsize && raw_buf[ptr] == 0x16 && raw_buf[ptr + 1] == 0x16) {
-                break;
-            }
-            add_pulse_byte(&pulses, &count, &cap, raw_buf[ptr++]);
+        /* 2. 16 octets 0x16 pour synchronisation infaillible de la ROM */
+        for (int i = 0; i < 16; i++) {
+            add_pulse_byte(&pulses, &count, &cap, 0x16);
         }
 
-        /* Pause de fin de bloc */
+        /* 3. Marqueur 0x24 */
+        add_pulse_byte(&pulses, &count, &cap, 0x24);
+
+        /* 4. Les 9 octets d'en-tête */
+        for (int i = 0; i < 9; i++) {
+            add_pulse_byte(&pulses, &count, &cap, hdr[i]);
+        }
+
+        /* 5. Le nom du bloc terminé par 0x00 */
+        for (int i = 0; i < bni; i++) {
+            add_pulse_byte(&pulses, &count, &cap, (uint8_t)block_name[i]);
+        }
+        add_pulse_byte(&pulses, &count, &cap, 0x00);
+
+        /* 6. Pause inter-bloc (200 bits 1) : laisse le temps à la ROM d'afficher le nom sans manquer de données */
+        for (int i = 0; i < 200; i++) {
+            add_pulse_bit(&pulses, &count, &cap, 1);
+        }
+
+        /* 7. Émission intégrale des octets de données avec alignement exact */
+        for (size_t i = 0; i < bytes_to_emit; i++) {
+            uint8_t val = (i < actual_data_len && (ptr + i) < fsize) ? raw_buf[ptr + i] : 0x00;
+            add_pulse_byte(&pulses, &count, &cap, val);
+        }
+        ptr = next_sync;
+
+        /* 8. Pause de fin de bloc (100 bits 1) */
         for (int i = 0; i < 100; i++) {
             add_pulse_bit(&pulses, &count, &cap, 1);
         }
@@ -172,9 +191,9 @@ bool tape_load_file(const wchar_t *filename) {
     g_tape.loaded = true;
     g_tape.auto_cload_triggered = true;
 
-    debug_log(L"Flux K7 généré avec succès (%u impulsions)", (unsigned)count);
+    debug_log(L"Flux K7 matériel généré avec succès (%u impulsions)", (unsigned)count);
 
-    /* Enclenchement automatique de la commande de chargement cload"" */
+    /* Enclenchement automatique de cload\"\" */
     typein_queue("cload\"\"\r");
     debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
 
@@ -197,10 +216,17 @@ void tape_step(uint32_t cycles) {
 
     g_tape.bit_cycles_left -= (int32_t)cycles;
     while (g_tape.bit_cycles_left <= 0 && g_tape.pulse_pos < g_tape.pulse_count) {
-        /* Transition active détectée sur la broche CB1 du VIA 6522 */
-        g_via.ifr |= 0x10;
+        /* Si l'interruption CB1 précédente n'a pas encore été lue et acquittée par la ROM via LDA $0300,
+         * on patiente sans faire avancer la bande afin de ne perdre aucune impulsion */
+        if (g_via.ifr & 0x10) {
+            g_tape.bit_cycles_left = 0;
+            break;
+        }
 
+        /* Transition active sur la broche CB1 du VIA 6522 */
+        g_via.ifr |= 0x10;
         uint8_t bit = g_tape.pulse_buf[g_tape.pulse_pos++];
+
         if (bit) {
             /* Bit 1 (période courte ~350 cycles) :
              * Timer 2 High = 0xFE -> dans la routine ROM ($E731 CMP #$FE)
