@@ -1,17 +1,21 @@
 CC = x86_64-w64-mingw32-gcc
 CFLAGS = -Wall -Wextra -O3
-LDFLAGS = -municode -s -static -municode -mwindows
-TARGET = oric_atmos.exe
-SRC = common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c
-OBJ = $(SRC:.c=.o)
+LDFLAGS = -municode -s -static -mwindows
 LDLIBS = -lgdi32 -lwinmm -lshell32
+
+TARGET = oric.exe
+SRC = $(wildcard src/*.c)
+OBJ = $(patsubst src/%.c,obj/%.o,$(SRC))
 
 $(TARGET): $(OBJ)
 	-taskkill /F /IM "$(TARGET)"
 	$(CC) $(OBJ) -o $(TARGET) $(LDFLAGS) $(LDLIBS)
 
-%.o: %.c
+obj/%.o: src/%.c
+	if not exist obj mkdir obj
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJ) $(TARGET)
+	del /Q $(OBJ) $(TARGET) 2>NUL
+
+.PHONY: clean
