@@ -333,7 +333,9 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         }
 
         video_render_frame();
-        audio_update();
+        if (!tape_running) {
+            audio_update();
+        }
         InvalidateRect(hwnd, NULL, FALSE);
 
         DWORD now = timeGetTime();

@@ -1,6 +1,0 @@
-{
-  "name": "Oric Atmos Win32 C",
-  "description": "Émulateur Oric Atmos en langage C Win32 MinGW64",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
