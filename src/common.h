@@ -21,10 +21,9 @@
 
 #define SCREEN_W 240
 #define SCREEN_H 224
-#define SCALE_X  3
-#define SCALE_Y  2
-#define WIN_W    (SCREEN_W * SCALE_X)
-#define WIN_H    (SCREEN_H * SCALE_Y)
+#define SCALE_DEFAULT 3
+#define WIN_W    (SCREEN_W * SCALE_DEFAULT)
+#define WIN_H    (SCREEN_H * SCALE_DEFAULT)
 
 #define CPU_CLOCK_HZ      1000000
 #define FRAME_RATE_HZ     50

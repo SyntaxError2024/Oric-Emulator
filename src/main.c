@@ -26,47 +26,81 @@
 #include "video.h"
 
 /* ============================================================================
- * PLEIN ÉCRAN (ALT+ENTRÉE) AVEC RESPECT DU RATIO 4:3
+ * PLEIN ÉCRAN ET MISE À L'ÉCHELLE ENTIÈRE (PIXEL-PERFECT) CENTRÉE (RATIO 4:3)
  * ============================================================================ */
+static bool g_is_fullscreen = false;
+static WINDOWPLACEMENT g_saved_wp = { sizeof(g_saved_wp) };
+
+static void get_display_rect(HWND hwnd, RECT *out_disp_rc, RECT *out_client_rc) {
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    if (out_client_rc) *out_client_rc = rc;
+
+    int client_w = rc.right - rc.left;
+    int client_h = rc.bottom - rc.top;
+
+    if (client_w <= 0 || client_h <= 0) {
+        SetRect(out_disp_rc, 0, 0, 0, 0);
+        return;
+    }
+
+    /* Facteur d'échelle entier : chaque pixel Oric correspond à 1, 2, 3, 4... pixels réels du moniteur */
+    int scale_x = client_w / SCREEN_W;
+    int scale_y = client_h / SCREEN_H;
+    int scale = (scale_x < scale_y) ? scale_x : scale_y;
+    if (scale < 1) scale = 1;
+
+    int draw_w = SCREEN_W * scale;
+    int draw_h = SCREEN_H * scale;
+
+    int dst_x = (client_w - draw_w) / 2;
+    int dst_y = (client_h - draw_h) / 2;
+
+    out_disp_rc->left = dst_x;
+    out_disp_rc->top = dst_y;
+    out_disp_rc->right = dst_x + draw_w;
+    out_disp_rc->bottom = dst_y + draw_h;
+}
+
 static void toggle_fullscreen(HWND hwnd) {
-    static WINDOWPLACEMENT wp = { sizeof(wp) };
     DWORD dwStyle = GetWindowLong(hwnd, GWL_STYLE);
 
-    if (dwStyle & WS_OVERLAPPEDWINDOW) {
+    if (!g_is_fullscreen) {
         MONITORINFO mi = { sizeof(mi) };
-        if (GetWindowPlacement(hwnd, &wp) && GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) {
-            SetWindowLong(hwnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW);
+        HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (GetWindowPlacement(hwnd, &g_saved_wp) && GetMonitorInfo(hMon, &mi)) {
+            g_is_fullscreen = true;
 
-            int screen_w = mi.rcMonitor.right - mi.rcMonitor.left;
-            int screen_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+            int mon_x = mi.rcMonitor.left;
+            int mon_y = mi.rcMonitor.top;
+            int mon_w = mi.rcMonitor.right - mi.rcMonitor.left;
+            int mon_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
-            int window_w, window_h;
-            if (screen_w * 3 > screen_h * 4) {
-                /* Écran plus large que 4:3 : caler sur la hauteur */
-                window_h = screen_h;
-                window_w = screen_h * 4 / 3;
-            } else {
-                /* Écran plus haut : caler sur la largeur */
-                window_w = screen_w;
-                window_h = screen_w * 3 / 4;
-            }
-
-            int margin_left = (screen_w - window_w) / 2;
-            int margin_top  = (screen_h - window_h) / 2;
-
+            /* La fenêtre plein écran couvre l'intégralité du moniteur (aucun bureau visible) */
+            SetWindowLong(hwnd, GWL_STYLE, (dwStyle & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
             SetWindowPos(hwnd, HWND_TOP,
-                         margin_left, margin_top,
-                         window_w, window_h,
+                         mon_x, mon_y, mon_w, mon_h,
                          SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-            debug_log(L"Basculement en Mode Plein Écran (Ratio 4:3 respecté)");
+
+            int scale = mon_h / SCREEN_H;
+            if (mon_w / SCREEN_W < scale) scale = mon_w / SCREEN_W;
+            if (scale < 1) scale = 1;
+
+            debug_log(L"Plein écran activé : %dx%d (Échelle Oric entière: %dx, pixels réels: %dx%d)",
+                      mon_w, mon_h, scale, SCREEN_W * scale, SCREEN_H * scale);
         }
     } else {
-        SetWindowLong(hwnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(hwnd, &wp);
+        g_is_fullscreen = false;
+
+        /* Rétablissement du mode fenêtré standard avec bordures et barre de titre */
+        SetWindowLong(hwnd, GWL_STYLE, (dwStyle & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
+        SetWindowPlacement(hwnd, &g_saved_wp);
         SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
-        debug_log(L"Basculement en Mode Fenêtré");
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+        debug_log(L"Mode fenêtré rétabli");
     }
+
+    InvalidateRect(hwnd, NULL, TRUE);
 }
 
 /* ============================================================================
@@ -121,7 +155,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
 
         case WM_KEYDOWN:
-            if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) {
+            if ((wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) || wParam == VK_F11) {
+                toggle_fullscreen(hwnd);
+                return 0;
+            }
+            if (wParam == VK_ESCAPE && g_is_fullscreen) {
                 toggle_fullscreen(hwnd);
                 return 0;
             }
@@ -138,8 +176,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
                     L"- Glisser-déposer un fichier .TAP, .ROM ou .DSK\n"
-                    L"- Alt+Entrée : Plein écran / Mode fenêtré (4:3)\n"
-                    L"- F5 : Réinitialisation de la machine\n"
+                    L"- Alt+Entrée ou F11 : Plein écran (centré, ratio 4:3, pixels entiers)\n"
+                    L"- Échap : Quitter le plein écran\n"
+                    L"- F5 : Réinitialisation matérielle (Reset)\n"
                     L"- Clavier AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
             }
@@ -170,14 +209,41 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             keyboard_reset();
             return 0;
 
+        case WM_ERASEBKGND:
+            return 1; /* Évite tout scintillement, WM_PAINT gère toute la surface */
+
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
-            RECT rc;
-            GetClientRect(hwnd, &rc);
+            RECT disp_rc, client_rc;
+            get_display_rect(hwnd, &disp_rc, &client_rc);
+
+            int client_w = client_rc.right - client_rc.left;
+            int client_h = client_rc.bottom - client_rc.top;
+            int draw_w = disp_rc.right - disp_rc.left;
+            int draw_h = disp_rc.bottom - disp_rc.top;
+
+            HBRUSH black_brush = (HBRUSH)GetStockObject(BLACK_BRUSH);
+
+            /* Bandes noires (letterbox / pillarbox) pour centrer le ratio 4:3 de l'Oric */
+            if (disp_rc.left > 0) {
+                RECT r_left  = { 0, 0, disp_rc.left, client_h };
+                RECT r_right = { disp_rc.right, 0, client_w, client_h };
+                FillRect(hdc, &r_left, black_brush);
+                FillRect(hdc, &r_right, black_brush);
+            }
+            if (disp_rc.top > 0) {
+                RECT r_top    = { 0, 0, client_w, disp_rc.top };
+                RECT r_bottom = { 0, disp_rc.bottom, client_w, client_h };
+                FillRect(hdc, &r_top, black_brush);
+                FillRect(hdc, &r_bottom, black_brush);
+            }
+
+            /* Affichage pixel-perfect : chaque pixel Oric = 1, 2, 3 ou N pixels réels sans flou */
+            SetStretchBltMode(hdc, COLORONCOLOR);
             StretchDIBits(
                 hdc,
-                0, 0, rc.right, rc.bottom,
+                disp_rc.left, disp_rc.top, draw_w, draw_h,
                 0, 0, SCREEN_W, SCREEN_H,
                 g_framebuffer,
                 &g_bmi,
