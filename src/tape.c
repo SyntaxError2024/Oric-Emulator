@@ -1,6 +1,7 @@
 #include "tape.h"
 #include "keyboard.h"
 #include "via.h"
+#include "cpu.h"
 
 TapeState g_tape;
 
@@ -11,7 +12,9 @@ void tape_init(void) {
 void tape_reset(void) {
     g_tape.pulse_pos = 0;
     g_tape.bit_cycles_left = 350;
-    g_tape.auto_cload_triggered = false;
+    g_tape.last_bit_t2h = 0;
+    /* Verrouillage permanent : un reset matériel (F5) ne doit JAMAIS réinjecter cload"" */
+    g_tape.auto_cload_triggered = true;
 }
 
 static void add_pulse_bit(uint8_t **buf, size_t *count, size_t *cap, uint8_t bit) {
@@ -175,14 +178,21 @@ bool tape_load_file(const wchar_t *filename) {
     g_tape.pulse_count = count;
     g_tape.pulse_pos = 0;
     g_tape.bit_cycles_left = 350;
+    g_tape.last_bit_t2h = 0;
     g_tape.loaded = true;
-    g_tape.auto_cload_triggered = true;
 
     debug_log(L"Flux K7 matériel généré avec succès (%u impulsions)", (unsigned)count);
 
-    /* Enclenchement automatique de cload\"\" */
-    typein_queue("cload\"\"\r");
-    debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
+    /* Enclenchement de CLOAD "" : si la machine a déjà démarré (boot terminé),
+     * on saisit immédiatement. Sinon, cpu_step() s'en chargera dès que le BASIC est prêt. */
+    if (g_cpu.cycles >= 1200000) {
+        g_tape.auto_cload_triggered = true;
+        typein_queue("cload\"\"\r");
+        debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
+    } else {
+        g_tape.auto_cload_triggered = false;
+        debug_log(L"K7 préchargée au démarrage : Auto-CLOAD différé après boot BASIC");
+    }
 
     return true;
 }
@@ -198,6 +208,7 @@ void tape_step(uint32_t cycles) {
     if (g_tape.pulse_pos >= g_tape.pulse_count) {
         g_tape.pulse_pos = 0;
         g_tape.bit_cycles_left = 350;
+        g_tape.last_bit_t2h = 0;
         debug_log(L"Moteur cassette activé : rembobinage automatique au début");
     }
 
@@ -219,12 +230,14 @@ void tape_step(uint32_t cycles) {
              * Timer 2 High = 0xFE -> dans la routine ROM ($E731 CMP #$FE)
              * la retenue CARRY est mise à 1. */
             g_via.t2c = 0xFE50;
+            g_tape.last_bit_t2h = 0xFE;
             g_tape.bit_cycles_left += 350;
         } else {
             /* Bit 0 (période longue ~650 cycles) :
              * Timer 2 High = 0xFD -> dans la routine ROM ($E731 CMP #$FE)
              * la retenue CARRY est mise à 0. */
             g_via.t2c = 0xFD50;
+            g_tape.last_bit_t2h = 0xFD;
             g_tape.bit_cycles_left += 650;
         }
     }

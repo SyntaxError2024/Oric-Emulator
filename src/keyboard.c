@@ -19,6 +19,7 @@ void keyboard_reset(void) {
     g_typein_row = -1;
     g_typein_col = -1;
     g_typein_shift = false;
+    memset(g_typein_buffer, 0, sizeof(g_typein_buffer));
 }
 
 void keyboard_set_key(int row, int col, bool pressed) {

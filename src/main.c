@@ -162,8 +162,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (wParam == VK_ESCAPE && g_is_fullscreen) {
                 toggle_fullscreen(hwnd);
                 return 0;
-            }
-            keyboard_handle_vk((UINT)wParam, true);
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Reset F5)");
                 cpu_reset();
@@ -171,7 +169,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ay_reset();
                 keyboard_reset();
                 tape_reset();
-            } else if (wParam == VK_F1) {
+                return 0;
+            }
+            if (wParam == VK_F1) {
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
@@ -181,7 +181,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     L"- F5 : Réinitialisation matérielle (Reset)\n"
                     L"- Clavier AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
+                return 0;
             }
+            keyboard_handle_vk((UINT)wParam, true);
             return 0;
 
         case WM_KEYUP:

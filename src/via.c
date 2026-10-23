@@ -49,7 +49,11 @@ uint8_t via_read(uint8_t reg) {
         case 0x08:
             g_via.ifr &= ~0x20;
             return g_via.t2c & 0xFF;
-        case 0x09: return (g_via.t2c >> 8) & 0xFF;
+        case 0x09:
+            if ((g_via.orb & 0x40) && g_tape.loaded && g_tape.last_bit_t2h != 0) {
+                return g_tape.last_bit_t2h;
+            }
+            return (g_via.t2c >> 8) & 0xFF;
         case 0x0A: return g_via.sr;
         case 0x0B: return g_via.acr;
         case 0x0C: return g_via.pcr;
@@ -84,6 +88,7 @@ void via_write(uint8_t reg, uint8_t val) {
         case 0x07: g_via.t1l = (g_via.t1l & 0x00FF) | ((uint16_t)val << 8); break;
         case 0x08: g_via.t2l = (g_via.t2l & 0xFF00) | val; break;
         case 0x09:
+            g_tape.last_bit_t2h = 0;
             g_via.t2l = (g_via.t2l & 0x00FF) | ((uint16_t)val << 8);
             if ((g_via.t2l & 0xFF) == 0) g_via.t2l |= 0xFF;
             g_via.t2c = g_via.t2l;

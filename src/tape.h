@@ -12,6 +12,7 @@ typedef struct {
     char current_name[32];     /* Nom du programme extrait du premier en-tête .TAP */
     bool loaded;               /* Indique si un fichier .TAP valide est chargé */
     bool auto_cload_triggered; /* Indique si la saisie auto CLOAD "" a déjà eu lieu */
+    uint8_t last_bit_t2h;      /* Valeur Timer 2 High stable pour la ROM (0xFE = bit 1, 0xFD = bit 0) */
 } TapeState;
 
 extern TapeState g_tape;
