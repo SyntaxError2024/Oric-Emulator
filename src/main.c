@@ -162,6 +162,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (wParam == VK_ESCAPE && g_is_fullscreen) {
                 toggle_fullscreen(hwnd);
                 return 0;
+            }
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Reset F5)");
                 cpu_reset();
