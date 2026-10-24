@@ -183,15 +183,15 @@ bool tape_load_file(const wchar_t *filename) {
 
     debug_log(L"Flux K7 matériel généré avec succès (%u impulsions)", (unsigned)count);
 
-    /* Enclenchement de CLOAD "" : si la machine a déjà démarré (boot terminé),
+    /* Enclenchement de CLOAD "" : si la machine a déjà démarré (boot terminé après 2.0s),
      * on saisit immédiatement. Sinon, cpu_step() s'en chargera dès que le BASIC est prêt. */
-    if (g_cpu.cycles >= 1200000) {
+    if (g_cpu.cycles >= 2000000) {
         g_tape.auto_cload_triggered = true;
         typein_queue("cload\"\"\r");
         debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
     } else {
         g_tape.auto_cload_triggered = false;
-        debug_log(L"K7 préchargée au démarrage : Auto-CLOAD différé après boot BASIC");
+        debug_log(L"K7 préchargée au démarrage : Auto-CLOAD différé après boot BASIC (2.0s)");
     }
 
     return true;
