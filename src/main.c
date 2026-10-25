@@ -24,6 +24,7 @@
 #include "keyboard.h"
 #include "tape.h"
 #include "video.h"
+#include "browser.h"
 
 /* ============================================================================
  * PLEIN ÉCRAN ET MISE À L'ÉCHELLE ENTIÈRE (PIXEL-PERFECT) CENTRÉE (RATIO 4:3)
@@ -159,6 +160,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 toggle_fullscreen(hwnd);
                 return 0;
             }
+            if (wParam == VK_F2) {
+                g_browser.active = !g_browser.active;
+                if (g_browser.active) {
+                    browser_refresh();
+                }
+                return 0;
+            }
+            if (g_browser.active) {
+                if (browser_handle_key((UINT)wParam, hwnd)) {
+                    return 0;
+                }
+            }
             if (wParam == VK_ESCAPE && g_is_fullscreen) {
                 toggle_fullscreen(hwnd);
                 return 0;
@@ -176,12 +189,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
+                    L"- F2 : Ouvrir / Fermer l'explorateur de fichiers Oric\n"
                     L"- Glisser-déposer un fichier .TAP, .ROM ou .DSK\n"
                     L"- Alt+Entrée ou F11 : Plein écran (centré, ratio 4:3, pixels entiers)\n"
                     L"- Échap : Quitter le plein écran\n"
                     L"- F5 : Réinitialisation matérielle (Reset)\n"
                     L"- Clavier AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+            if (lParam & 0x40000000) {
+                /* Touche déjà enfoncée (autorépétition OS Windows) :
+                 * on l'ignore car la ROM Oric Atmos gère elle-même la répétition matérielle à 100 Hz */
                 return 0;
             }
             keyboard_handle_vk((UINT)wParam, true);
@@ -191,19 +210,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             keyboard_handle_vk((UINT)wParam, false);
             return 0;
 
-        case WM_CHAR: {
-            wchar_t wch = (wchar_t)wParam;
-            if (wch >= 32 && wch <= 126) {
-                keyboard_queue_char((char)wch);
-            } else if (wch == L'\r' || wch == L'\n') {
-                keyboard_queue_char('\r');
-            } else if (wch == 8) {
-                keyboard_queue_char('\x08');
-            } else if (wch == 27) {
-                keyboard_queue_char('\x1b');
-            }
+        case WM_CHAR:
+            /* La saisie du clavier physique est gérée directement sur la matrice par WM_KEYDOWN / WM_KEYUP.
+             * On ne met pas en file d'attente dans WM_CHAR afin d'éviter tout dédoublement de caractère. */
             return 0;
-        }
 
         case WM_SETFOCUS:
             return 0;
@@ -273,31 +283,55 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
 
     tape_init();
     keyboard_reset();
+    browser_init();
 
     bool rom_explicitly_loaded = false;
+    bool file_passed_on_cli = false;
+
     if (cmdLine && cmdLine[0] != 0) {
         wchar_t path[MAX_PATH];
         wcsncpy(path, cmdLine, MAX_PATH - 1);
         path[MAX_PATH - 1] = 0;
-        if (path[0] == L'\"') {
-            size_t l = wcslen(path);
-            if (path[l - 1] == L'\"') path[l - 1] = 0;
-            wmemmove(path, path + 1, l);
+        wchar_t *p = path;
+        while (*p == L' ' || *p == L'\t') p++;
+        size_t l = wcslen(p);
+        while (l > 0 && (p[l - 1] == L' ' || p[l - 1] == L'\t')) {
+            p[--l] = 0;
+        }
+        if (l >= 2 && p[0] == L'\"' && p[l - 1] == L'\"') {
+            p[l - 1] = 0;
+            p++;
         }
 
-        wchar_t *ext = wcsrchr(path, L'.');
+        wchar_t *ext = wcsrchr(p, L'.');
         if (ext && (_wcsicmp(ext, L".rom") == 0)) {
-            oric_load_rom(path);
-            if (g_rom_loaded) rom_explicitly_loaded = true;
+            if (oric_load_rom(p)) {
+                rom_explicitly_loaded = true;
+                file_passed_on_cli = true;
+            }
         }
     }
 
+    /* Chargement de la ROM par défaut mémorisée dans settings.ini, sinon atmos.rom */
     if (!rom_explicitly_loaded) {
-        oric_load_rom(L"./roms/atmos.rom");
+        if (g_browser.default_rom[0] != 0) {
+            oric_load_rom(g_browser.default_rom);
+        }
+        if (!g_rom_loaded) {
+            if (!oric_load_rom(L"./roms/atmos.rom")) {
+                if (!oric_load_rom(L"../roms/atmos.rom")) {
+                    oric_load_rom(L"atmos.rom");
+                }
+            }
+        }
     }
 
     /* Charger automatiquement MICRODIS.ROM s'il est présent */
-    oric_load_microdis_rom(L"./roms/MICRODIS.ROM");
+    if (!oric_load_microdis_rom(L"./roms/MICRODIS.ROM")) {
+        if (!oric_load_microdis_rom(L"../roms/MICRODIS.ROM")) {
+            oric_load_microdis_rom(L"MICRODIS.ROM");
+        }
+    }
 
     if (!g_rom_loaded) {
         debug_log(L"Erreur : Aucune ROM trouvée dans le répertoire courant !");
@@ -330,7 +364,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
     HWND hwnd = CreateWindowExW(
         WS_EX_ACCEPTFILES,
         L"OricAtmosWin32",
-        L"Oric Atmos (MinGW64 / C Unicode / GDI) - Alt+Entrée Plein écran",
+        L"Oric Atmos (MinGW64 / C Unicode / GDI) - F2 Explorateur - Alt+Entrée Plein écran",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         rc.right - rc.left, rc.bottom - rc.top,
@@ -351,26 +385,43 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         wchar_t path[MAX_PATH];
         wcsncpy(path, cmdLine, MAX_PATH - 1);
         path[MAX_PATH - 1] = 0;
-        if (path[0] == L'\"') {
-            size_t l = wcslen(path);
-            if (path[l - 1] == L'\"') path[l - 1] = 0;
-            wmemmove(path, path + 1, l);
+        wchar_t *p = path;
+        while (*p == L' ' || *p == L'\t') p++;
+        size_t l = wcslen(p);
+        while (l > 0 && (p[l - 1] == L' ' || p[l - 1] == L'\t')) {
+            p[--l] = 0;
+        }
+        if (l >= 2 && p[0] == L'\"' && p[l - 1] == L'\"') {
+            p[l - 1] = 0;
+            p++;
         }
 
-        wchar_t *ext = wcsrchr(path, L'.');
+        wchar_t *ext = wcsrchr(p, L'.');
         if (ext) {
             if (_wcsicmp(ext, L".tap") == 0) {
-                tape_load_file(path);
-                wchar_t title[512];
-                swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]",
-                         g_tape.current_name[0] ? (wchar_t *)g_tape.current_name : L"Inconnu");
-                SetWindowTextW(hwnd, title);
+                if (tape_load_file(p)) {
+                    file_passed_on_cli = true;
+                    wchar_t title[512];
+                    swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]",
+                             g_tape.current_name[0] ? (wchar_t *)g_tape.current_name : L"Inconnu");
+                    SetWindowTextW(hwnd, title);
+                }
             } else if (_wcsicmp(ext, L".dsk") == 0) {
-                debug_log(L"Image disque .DSK chargée : %ls", path);
+                debug_log(L"Image disque .DSK chargée : %ls", p);
                 g_microdis_control = 0x00;
+                file_passed_on_cli = true;
                 SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
             }
         }
+    }
+
+    /* Si un fichier a été passé explicitement sur la ligne de commande,
+     * on désactive l'explorateur pour lancer directement le fichier.
+     * Sinon, l'explorateur s'affiche au démarrage comme demandé ! */
+    if (file_passed_on_cli) {
+        g_browser.active = false;
+    } else {
+        g_browser.active = true;
     }
 
     timeBeginPeriod(1);
@@ -389,6 +440,21 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         }
 
         if (!running) break;
+
+        /* Si l'explorateur de fichiers est actif, on l'affiche et on met en pause l'émulation CPU */
+        if (g_browser.active) {
+            browser_render();
+            video_render_frame();
+            InvalidateRect(hwnd, NULL, FALSE);
+
+            DWORD now = timeGetTime();
+            DWORD elapsed_ms = now - last_tick;
+            if (elapsed_ms < 20) {
+                Sleep(20 - elapsed_ms);
+            }
+            last_tick = timeGetTime();
+            continue;
+        }
 
         /* Émulation de la trame 50Hz (accélération turbo x15 pendant lecture cassette) */
         bool tape_running = (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);

@@ -140,8 +140,8 @@ void keyboard_handle_vk(UINT vk, bool pressed) {
         case VK_SPACE:   row = 4; col = 0; break;
         case VK_RETURN:  row = 7; col = 5; break;
         case VK_ESCAPE:  row = 1; col = 5; break;
-        case VK_BACK:    row = 5; col = 5; break;
-        case VK_DELETE:  row = 5; col = 5; break;
+        case VK_BACK:
+        case VK_DELETE:  row = 4; col = 5; break; /* Oric Atmos: Flèche gauche (4,5) = Effacement arrière */
         case VK_TAB:     row = 4; col = 7; break;
 
         case VK_SHIFT:

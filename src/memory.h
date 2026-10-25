@@ -14,7 +14,7 @@ void memory_reset(void);
 uint8_t mem_read(uint16_t addr);
 void mem_write(uint16_t addr, uint8_t val);
 
-void oric_load_rom(const wchar_t *path);
-void oric_load_microdis_rom(const wchar_t *path);
+bool oric_load_rom(const wchar_t *path);
+bool oric_load_microdis_rom(const wchar_t *path);
 
 #endif /* MEMORY_H */

@@ -20,6 +20,7 @@ extern TapeState g_tape;
 void tape_init(void);
 void tape_reset(void);
 bool tape_load_file(const wchar_t *filename);
+bool tape_load_file_quiet(const wchar_t *filename);
 
 /* Émulation matérielle du signal CB1 et du Timer 2 vers le VIA 6522 */
 void tape_step(uint32_t cycles);

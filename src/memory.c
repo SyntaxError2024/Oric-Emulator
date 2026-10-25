@@ -14,9 +14,9 @@ void memory_reset(void) {
     g_microdis_control = 0x04;
 }
 
-void oric_load_rom(const wchar_t *path) {
+bool oric_load_rom(const wchar_t *path) {
     FILE *f = _wfopen(path, L"rb");
-    if (!f) return;
+    if (!f) return false;
 
     size_t n = fread(g_rom, 1, 16384, f);
     fclose(f);
@@ -24,14 +24,16 @@ void oric_load_rom(const wchar_t *path) {
     if (n == 16384) {
         g_rom_loaded = true;
         debug_log(L"ROM chargée : %ls (16384 octets)", path);
+        return true;
     } else {
         debug_log(L"Erreur : Taille ROM incorrecte (%u octets)", (unsigned)n);
+        return false;
     }
 }
 
-void oric_load_microdis_rom(const wchar_t *path) {
+bool oric_load_microdis_rom(const wchar_t *path) {
     FILE *f = _wfopen(path, L"rb");
-    if (!f) return;
+    if (!f) return false;
 
     size_t n = fread(g_microdis_rom, 1, 8192, f);
     fclose(f);
@@ -39,8 +41,10 @@ void oric_load_microdis_rom(const wchar_t *path) {
     if (n == 8192) {
         g_microdis_loaded = true;
         debug_log(L"Microdisc ROM chargée : %ls (8192 octets à 0xE000)", path);
+        return true;
     } else {
         debug_log(L"Erreur : Taille Microdisc ROM incorrecte (%u octets)", (unsigned)n);
+        return false;
     }
 }
 

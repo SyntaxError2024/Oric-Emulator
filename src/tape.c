@@ -47,12 +47,39 @@ static void add_pulse_byte(uint8_t **buf, size_t *count, size_t *cap, uint8_t b)
     }
 }
 
-bool tape_load_file(const wchar_t *filename) {
+static bool tape_load_file_internal(const wchar_t *filename, bool quiet) {
+    if (!filename || filename[0] == 0) return false;
+
     FILE *f = _wfopen(filename, L"rb");
     if (!f) {
-        wchar_t msg[512];
-        swprintf(msg, 512, L"Impossible d'ouvrir le fichier .TAP :\n%ls", filename);
-        MessageBoxW(NULL, msg, L"Erreur fichier", MB_OK | MB_ICONERROR);
+        wchar_t alt[MAX_PATH];
+        swprintf(alt, MAX_PATH, L"./tapes/%ls", filename);
+        f = _wfopen(alt, L"rb");
+        if (!f) {
+            swprintf(alt, MAX_PATH, L"../tapes/%ls", filename);
+            f = _wfopen(alt, L"rb");
+        }
+        if (!f) {
+            const wchar_t *bs = wcsrchr(filename, L'\\');
+            const wchar_t *fs = wcsrchr(filename, L'/');
+            const wchar_t *base = bs ? (fs && fs > bs ? fs + 1 : bs + 1) : (fs ? fs + 1 : NULL);
+            if (base) {
+                swprintf(alt, MAX_PATH, L"./tapes/%ls", base);
+                f = _wfopen(alt, L"rb");
+                if (!f) {
+                    swprintf(alt, MAX_PATH, L"../tapes/%ls", base);
+                    f = _wfopen(alt, L"rb");
+                }
+            }
+        }
+    }
+
+    if (!f) {
+        if (!quiet) {
+            wchar_t msg[512];
+            swprintf(msg, 512, L"Impossible d'ouvrir le fichier .TAP :\n%ls", filename);
+            MessageBoxW(NULL, msg, L"Erreur fichier", MB_OK | MB_ICONERROR);
+        }
         return false;
     }
 
@@ -187,14 +214,22 @@ bool tape_load_file(const wchar_t *filename) {
      * on saisit immédiatement. Sinon, cpu_step() s'en chargera dès que le BASIC est prêt. */
     if (g_cpu.cycles >= 2000000) {
         g_tape.auto_cload_triggered = true;
-        typein_queue("cload\"\"\r");
-        debug_log(L"Auto-CLOAD enclenché : saisie de 'cload\"\"\\r'");
+        typein_queue("\rcload\"\"\r");
+        debug_log(L"Auto-CLOAD enclenché : saisie de '\\rcload\"\"\\r'");
     } else {
         g_tape.auto_cload_triggered = false;
         debug_log(L"K7 préchargée au démarrage : Auto-CLOAD différé après boot BASIC (2.0s)");
     }
 
     return true;
+}
+
+bool tape_load_file(const wchar_t *filename) {
+    return tape_load_file_internal(filename, false);
+}
+
+bool tape_load_file_quiet(const wchar_t *filename) {
+    return tape_load_file_internal(filename, true);
 }
 
 void tape_step(uint32_t cycles) {
@@ -204,12 +239,9 @@ void tape_step(uint32_t cycles) {
     bool motor_on = (g_via.orb & 0x40) != 0;
     if (!motor_on) return;
 
-    /* Rembobinage automatique si la bande était terminée */
+    /* Fin de bande : arrêt propre du flux K7 sans reboucler intempestivement */
     if (g_tape.pulse_pos >= g_tape.pulse_count) {
-        g_tape.pulse_pos = 0;
-        g_tape.bit_cycles_left = 350;
-        g_tape.last_bit_t2h = 0;
-        debug_log(L"Moteur cassette activé : rembobinage automatique au début");
+        return;
     }
 
     g_tape.bit_cycles_left -= (int32_t)cycles;
