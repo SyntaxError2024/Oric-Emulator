@@ -57,16 +57,7 @@ static const uint8_t ORIC_FONT_STANDARD[768] = {
     0x2A, 0x15, 0x2A, 0x15, 0x2A, 0x15, 0x2A, 0x15, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F
 };
 
-static const uint8_t ORIC_FRENCH_GLYPHS[8][8] = {
-    { 0x22, 0x22, 0x1E, 0x00, 0x00, 0x00, 0x1C, 0x22 }, /* 0: à */
-    { 0x3E, 0x20, 0x1E, 0x00, 0x0C, 0x12, 0x10, 0x3C }, /* 1: é */
-    { 0x10, 0x10, 0x10, 0x00, 0x00, 0x00, 0x1C, 0x22 }, /* 2: è */
-    { 0x22, 0x1E, 0x02, 0x1C, 0x20, 0x20, 0x3C, 0x22 }, /* 3: ê */
-    { 0x22, 0x22, 0x22, 0x00, 0x08, 0x00, 0x18, 0x08 }, /* 4: ç */
-    { 0x08, 0x08, 0x1C, 0x00, 0x04, 0x00, 0x0C, 0x04 }, /* 5: ù */
-    { 0x04, 0x04, 0x24, 0x18, 0x20, 0x20, 0x22, 0x24 }, /* 6: ô */
-    { 0x38, 0x24, 0x22, 0x00, 0x18, 0x08, 0x08, 0x08 }  /* 7: î */
-};
+
 
 void video_init(void) {
     memset(&g_bmi, 0, sizeof(g_bmi));
@@ -76,6 +67,9 @@ void video_init(void) {
     g_bmi.bmiHeader.biPlanes = 1;
     g_bmi.bmiHeader.biBitCount = 32;
     g_bmi.bmiHeader.biCompression = BI_RGB;
+
+    /* Pré-charger la police standard en RAM à 0xB400 pour affichage immédiat */
+    memcpy(&g_ram[0xB400 + 32 * 8], ORIC_FONT_STANDARD, sizeof(ORIC_FONT_STANDARD));
 }
 
 void video_render_frame(void) {
@@ -174,21 +168,12 @@ void video_render_frame(void) {
 
                     uint8_t pattern = g_ram[glyph_addr];
 
-                    if (pattern == 0 && char_code >= 32 && char_code < 128) {
+                    if (pattern == 0 && g_ram[font_base + 65 * 8 + 4] == 0 && char_code >= 32 && char_code < 128) {
                         if (g_rom_loaded && !alt_charset) {
                             pattern = g_rom[0xFC78 - 0xC000 + (char_code - 32) * 8 + glyph_line];
                         } else {
                             pattern = ORIC_FONT_STANDARD[(char_code - 32) * 8 + glyph_line];
                         }
-
-                        if (char_code == '@') pattern = ORIC_FRENCH_GLYPHS[0][glyph_line]; /* à */
-                        else if (char_code == '{') pattern = ORIC_FRENCH_GLYPHS[1][glyph_line]; /* é */
-                        else if (char_code == '}') pattern = ORIC_FRENCH_GLYPHS[2][glyph_line]; /* è */
-                        else if (char_code == '~') pattern = ORIC_FRENCH_GLYPHS[3][glyph_line]; /* ê */
-                        else if (char_code == '\\') pattern = ORIC_FRENCH_GLYPHS[4][glyph_line]; /* ç */
-                        else if (char_code == '|') pattern = ORIC_FRENCH_GLYPHS[5][glyph_line]; /* ù */
-                        else if (char_code == '[') pattern = ORIC_FRENCH_GLYPHS[6][glyph_line]; /* ô */
-                        else if (char_code == ']') pattern = ORIC_FRENCH_GLYPHS[7][glyph_line]; /* î */
                     }
 
                     if (blinking && blink_phase) {

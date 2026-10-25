@@ -23,6 +23,8 @@ bool oric_load_rom(const wchar_t *path) {
 
     if (n == 16384) {
         g_rom_loaded = true;
+        /* Pré-remplir la police en RAM à 0xB400 à partir de la ROM chargée */
+        memcpy(&g_ram[0xB400 + 32 * 8], &g_rom[0xFC78 - 0xC000], 768);
         debug_log(L"ROM chargée : %ls (16384 octets)", path);
         return true;
     } else {

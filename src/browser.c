@@ -143,6 +143,32 @@ void browser_init(void) {
 
 #define BROWSER_VISIBLE_ROWS 22
 
+/* Nettoyage des caractères pour l'affichage écran Oric (ASCII standard 32..126) */
+static void sanitize_for_oric(char *str) {
+    for (; *str; str++) {
+        unsigned char c = (unsigned char)*str;
+        if (c >= 128) {
+            switch (c) {
+                case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: *str = 'A'; break;
+                case 0xC8: case 0xC9: case 0xCA: case 0xCB:                         *str = 'E'; break;
+                case 0xCC: case 0xCD: case 0xCE: case 0xCF:                         *str = 'I'; break;
+                case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6:             *str = 'O'; break;
+                case 0xD9: case 0xDA: case 0xDB: case 0xDC:                         *str = 'U'; break;
+                case 0xC7:                                                         *str = 'C'; break;
+                case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: *str = 'a'; break;
+                case 0xE8: case 0xE9: case 0xEA: case 0xEB:                         *str = 'e'; break;
+                case 0xEC: case 0xED: case 0xEE: case 0xEF:                         *str = 'i'; break;
+                case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6:             *str = 'o'; break;
+                case 0xF9: case 0xFA: case 0xFB: case 0xFC:                         *str = 'u'; break;
+                case 0xE7:                                                         *str = 'c'; break;
+                default:                                                           *str = '?'; break;
+            }
+        } else if (c < 32) {
+            *str = ' ';
+        }
+    }
+}
+
 void browser_render(void) {
     /* Écran Oric en mémoire vidéo : 28 lignes de 40 colonnes en 0xBB80 */
     uint8_t *screen = &g_ram[0xBB80];
@@ -162,6 +188,7 @@ void browser_render(void) {
     char dir_str[40];
     char conv_dir[MAX_PATH];
     WideCharToMultiByte(CP_ACP, 0, g_browser.current_dir, -1, conv_dir, MAX_PATH, NULL, NULL);
+    sanitize_for_oric(conv_dir);
     snprintf(dir_str, sizeof(dir_str), "Dossier: %.30s", conv_dir);
     for (int i = 0; i < 38 && dir_str[i]; i++) {
         screen[1 * 40 + 2 + i] = (uint8_t)dir_str[i];
@@ -206,6 +233,7 @@ void browser_render(void) {
             /* Libellé */
             char name_ansi[MAX_PATH];
             WideCharToMultiByte(CP_ACP, 0, e->name, -1, name_ansi, MAX_PATH, NULL, NULL);
+            sanitize_for_oric(name_ansi);
 
             char line_text[40];
             if (e->type == ENTRY_UP) {
