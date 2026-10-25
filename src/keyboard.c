@@ -45,7 +45,8 @@ bool keyboard_char_to_matrix(char ch, int *out_row, int *out_col, bool *out_shif
     *out_shift = false;
 
     switch (ch) {
-        case '\x08': *out_row = 4; *out_col = 5; *out_shift = false; return true; /* Backspace / Gauche */
+        case '\x08':
+        case '\x7f': *out_row = 5; *out_col = 5; *out_shift = false; return true; /* Oric Atmos DEL: efface le caractère */
         case '\t':   *out_row = 4; *out_col = 7; *out_shift = false; return true; /* Tab */
         case '\r':
         case '\n':   *out_row = 7; *out_col = 5; *out_shift = false; return true; /* Return */
@@ -141,7 +142,7 @@ void keyboard_handle_vk(UINT vk, bool pressed) {
         case VK_RETURN:  row = 7; col = 5; break;
         case VK_ESCAPE:  row = 1; col = 5; break;
         case VK_BACK:
-        case VK_DELETE:  row = 4; col = 5; break; /* Oric Atmos: Flèche gauche (4,5) = Effacement arrière */
+        case VK_DELETE:  row = 5; col = 5; break; /* Oric Atmos: Touche DEL (5,5) = Effacement réel du caractère */
         case VK_TAB:     row = 4; col = 7; break;
 
         case VK_SHIFT:

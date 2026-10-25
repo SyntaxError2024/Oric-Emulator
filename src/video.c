@@ -163,7 +163,9 @@ void video_render_frame(void) {
                      */
                     uint16_t font_base = g_hires_mode ? (alt_charset ? 0x9C00 : 0x9800)
                                                        : (alt_charset ? 0xB800 : 0xB400);
-                    int glyph_line = double_height ? (char_line / 2) : char_line;
+                    /* En double hauteur Oric, la moitié haute (lignes 0..3) s'affiche sur les rangées paires
+                     * et la moitié basse (lignes 4..7) sur les rangées impaires, chaque ligne étant doublée */
+                    int glyph_line = double_height ? ((text_row & 1) ? (4 + (char_line / 2)) : (char_line / 2)) : char_line;
                     uint16_t glyph_addr = font_base + (char_code * 8) + glyph_line;
 
                     uint8_t pattern = g_ram[glyph_addr];
