@@ -1,5 +1,7 @@
 #include "ay38912.h"
 #include "via.h"
+#include "tape.h"
+#include <math.h>
 
 AY38912 g_ay;
 
@@ -160,6 +162,12 @@ void audio_update(void) {
 
     short *buf = ay->audioBuffer[ay->currentBuffer];
 
+    bool tape_running = (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);
+    static float s_tape_phase = 0.0f;
+    size_t p_start = g_tape.frame_start_pos;
+    size_t p_end = g_tape.frame_end_pos;
+    if (p_end < p_start) p_end = p_start;
+
     /* Synthèse pour la durée de la trame (~441 échantillons = 20ms à 22050 Hz) */
     for (int i = 0; i < AY_BUFFER_SAMPLES; i++) {
         /* Horloge PSG AY-3-8912 : 1 MHz divisé par 16 = 62 500 Hz */
@@ -215,6 +223,31 @@ void audio_update(void) {
                 int chan_val = out_bit ? AY_DAC_VOL[vol] : -AY_DAC_VOL[vol];
                 mixed_sample += chan_val / 3;
             }
+        }
+
+        /* Mixage du son de la cassette pendant le chargement (volume faible, saturation analogique douce) */
+        if (tape_running && g_tape.pulse_buf && g_tape.pulse_count > 0) {
+            size_t pos = p_start;
+            if (p_end > p_start) {
+                pos = p_start + (size_t)(((uint64_t)(p_end - p_start) * i) / AY_BUFFER_SAMPLES);
+            }
+            if (pos >= g_tape.pulse_count) {
+                pos = g_tape.pulse_count - 1;
+            }
+            uint8_t bit = g_tape.pulse_buf[pos];
+            float freq = bit ? 2400.0f : 1300.0f;
+            s_tape_phase += (2.0f * 3.14159265f * freq) / 22050.0f;
+            if (s_tape_phase >= 2.0f * 3.14159265f) {
+                s_tape_phase -= 2.0f * 3.14159265f;
+            }
+            float s = sinf(s_tape_phase) * 1.5f;
+            if (s > 1.0f) s = 1.0f;
+            else if (s < -1.0f) s = -1.0f;
+
+            /* Volume faible : amplitude crête ~1400 (environ -26 dB) */
+            mixed_sample += (int)(s * 1400.0f);
+        } else {
+            s_tape_phase = 0.0f;
         }
 
         if (mixed_sample > 32767) mixed_sample = 32767;

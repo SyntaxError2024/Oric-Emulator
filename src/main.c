@@ -492,9 +492,11 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
             continue;
         }
 
-        /* Émulation de la trame 50Hz (accélération turbo x15 pendant lecture cassette) */
+        /* Émulation de la trame 50Hz (accélération turbo pendant lecture cassette) */
         bool tape_running = (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);
-        uint32_t frame_cycles = tape_running ? (CYCLES_PER_FRAME * 15) : CYCLES_PER_FRAME;
+        g_tape.frame_start_pos = g_tape.pulse_pos;
+
+        uint32_t frame_cycles = tape_running ? (CYCLES_PER_FRAME * 10) : CYCLES_PER_FRAME;
         uint64_t target_cycles = g_cpu.cycles + frame_cycles;
         while (g_cpu.cycles < target_cycles) {
             uint64_t before = g_cpu.cycles;
@@ -505,11 +507,10 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
                 fdc_step(elapsed);
             }
         }
+        g_tape.frame_end_pos = g_tape.pulse_pos;
 
         video_render_frame();
-        if (!tape_running) {
-            audio_update();
-        }
+        audio_update();
         InvalidateRect(hwnd, NULL, FALSE);
 
         DWORD now = timeGetTime();

@@ -13,6 +13,8 @@ void tape_reset(void) {
     g_tape.pulse_pos = 0;
     g_tape.bit_cycles_left = 350;
     g_tape.last_bit_t2h = 0;
+    g_tape.frame_start_pos = 0;
+    g_tape.frame_end_pos = 0;
     /* Verrouillage permanent : un reset matériel (F5) ne doit JAMAIS réinjecter cload"" */
     g_tape.auto_cload_triggered = true;
 }
@@ -206,6 +208,8 @@ static bool tape_load_file_internal(const wchar_t *filename, bool quiet) {
     g_tape.pulse_pos = 0;
     g_tape.bit_cycles_left = 350;
     g_tape.last_bit_t2h = 0;
+    g_tape.frame_start_pos = 0;
+    g_tape.frame_end_pos = 0;
     g_tape.loaded = true;
 
     debug_log(L"Flux K7 matériel généré avec succès (%u impulsions)", (unsigned)count);

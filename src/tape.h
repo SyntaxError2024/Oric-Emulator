@@ -13,6 +13,8 @@ typedef struct {
     bool loaded;               /* Indique si un fichier .TAP valide est chargé */
     bool auto_cload_triggered; /* Indique si la saisie auto CLOAD "" a déjà eu lieu */
     uint8_t last_bit_t2h;      /* Valeur Timer 2 High stable pour la ROM (0xFE = bit 1, 0xFD = bit 0) */
+    size_t frame_start_pos;    /* Position de début d'impulsion pour la trame audio */
+    size_t frame_end_pos;      /* Position de fin d'impulsion pour la trame audio */
 } TapeState;
 
 extern TapeState g_tape;
