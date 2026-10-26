@@ -23,7 +23,7 @@ uint8_t via_read(uint8_t reg) {
         case 0x00: {
             /* Lecture ORB : acquitte CB1 et lit la ligne de retour clavier PB3 */
             g_via.ifr &= ~0x10;
-            g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
+            cpu_update_irq();
             uint8_t row = g_via.orb & 0x07;
             uint8_t col_mask = (~g_ay.regs[14]) & 0xFF;
             uint8_t key_bit = keyboard_read_bit(row, col_mask);
@@ -42,7 +42,7 @@ uint8_t via_read(uint8_t reg) {
         case 0x03: return g_via.ddra;
         case 0x04:
             g_via.ifr &= ~0x40;
-            g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
+            cpu_update_irq();
             return g_via.t1c & 0xFF;
         case 0x05:
             return (g_via.t1c >> 8) & 0xFF;
@@ -50,7 +50,7 @@ uint8_t via_read(uint8_t reg) {
         case 0x07: return (g_via.t1l >> 8) & 0xFF;
         case 0x08:
             g_via.ifr &= ~0x20;
-            g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
+            cpu_update_irq();
             return g_via.t2c & 0xFF;
         case 0x09:
             if ((g_via.orb & 0x40) && g_tape.loaded && g_tape.last_bit_t2h != 0) {
@@ -121,7 +121,7 @@ void via_write(uint8_t reg, uint8_t val) {
             else g_via.ier &= ~(val & 0x7F);
             break;
     }
-    g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
+    cpu_update_irq();
 }
 
 void via_step(uint32_t cycles) {
@@ -151,5 +151,5 @@ void via_step(uint32_t cycles) {
     tape_step(cycles);
     typein_step(cycles);
 
-    g_cpu.irq_pending = (g_via.ifr & g_via.ier & 0x7F) != 0;
+    cpu_update_irq();
 }

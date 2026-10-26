@@ -8,7 +8,8 @@ extern uint8_t g_rom[16384];
 extern bool g_rom_loaded;
 extern uint8_t g_microdis_rom[8192];
 extern bool g_microdis_loaded;
-extern uint8_t g_microdis_control;
+extern bool g_romdis;
+extern bool g_microdis_eprom;
 
 void memory_reset(void);
 uint8_t mem_read(uint16_t addr);

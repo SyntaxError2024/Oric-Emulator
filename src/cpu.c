@@ -3,8 +3,15 @@
 #include "via.h"
 #include "tape.h"
 #include "keyboard.h"
+#include "fdc.h"
 
 CPU6502 g_cpu;
+
+void cpu_update_irq(void) {
+    bool via_irq = (g_via.ifr & g_via.ier & 0x7F) != 0;
+    bool fdc_irq = fdc_has_irq();
+    g_cpu.irq_pending = via_irq || fdc_irq;
+}
 
 static inline void cpu_set_nz(uint8_t val) {
     g_cpu.p &= ~(FLAG_N | FLAG_Z);

@@ -6,6 +6,7 @@
 #include "tape.h"
 #include "keyboard.h"
 #include "video.h"
+#include "fdc.h"
 
 FileBrowser g_browser;
 static uint8_t s_browser_screen[28 * 40];
@@ -439,15 +440,19 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
                 SetWindowTextW(hwnd, title);
                 return true;
             } else if (e->type == ENTRY_DSK) {
-                g_microdis_control = 0x00;
-                memory_reset();
-                via_reset();
-                ay_reset();
-                keyboard_reset();
-                tape_reset();
-                cpu_reset();
-                g_browser.active = false;
-                SetWindowTextW(hwnd, L"Oric Atmos - [Disque chargé]");
+                if (fdc_insert_dsk(0, full_path)) {
+                    fdc_reset();
+                    memory_reset();
+                    via_reset();
+                    ay_reset();
+                    keyboard_reset();
+                    tape_reset();
+                    cpu_reset();
+                    g_browser.active = false;
+                    wchar_t title[512];
+                    swprintf(title, 512, L"Oric Atmos - [Disque chargé : %ls]", e->name);
+                    SetWindowTextW(hwnd, title);
+                }
                 return true;
             }
             return true;

@@ -25,6 +25,7 @@
 #include "tape.h"
 #include "video.h"
 #include "browser.h"
+#include "fdc.h"
 
 /* ============================================================================
  * PLEIN ÉCRAN ET MISE À L'ÉCHELLE ENTIÈRE (PIXEL-PERFECT) CENTRÉE (RATIO 4:3)
@@ -130,8 +131,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                 } else if (ext && (_wcsicmp(ext, L".dsk") == 0)) {
                     debug_log(L"Image disque .DSK chargée : %ls", filename);
-                    g_microdis_control = 0x00;
-                    SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
+                    if (fdc_insert_dsk(0, filename)) {
+                        fdc_reset();
+                        memory_reset();
+                        via_reset();
+                        ay_reset();
+                        keyboard_reset();
+                        tape_reset();
+                        cpu_reset();
+                        g_browser.active = false;
+                        wchar_t title[512];
+                        const wchar_t *base = wcsrchr(filename, L'\\');
+                        if (!base) base = wcsrchr(filename, L'/');
+                        swprintf(title, 512, L"Oric Atmos - [Disque : %ls]", base ? base + 1 : filename);
+                        SetWindowTextW(hwnd, title);
+                    }
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
                     debug_log(L"Fichier .ROM déposé : %ls", filename);
                     oric_load_rom(filename);
@@ -182,6 +196,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Reset F5)");
                 g_browser.active = false;
+                fdc_reset();
                 memory_reset();
                 via_reset();
                 ay_reset();
@@ -350,6 +365,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
             L"ROM non trouvée", MB_OK | MB_ICONWARNING);
     }
 
+    fdc_init();
     memory_reset();
     via_reset();
     ay_reset();
@@ -418,9 +434,19 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
                 }
             } else if (_wcsicmp(ext, L".dsk") == 0) {
                 debug_log(L"Image disque .DSK chargée : %ls", p);
-                g_microdis_control = 0x00;
-                file_passed_on_cli = true;
-                SetWindowTextW(hwnd, L"Oric Atmos - [Microdisc Disk Loaded]");
+                if (fdc_insert_dsk(0, p)) {
+                    fdc_reset();
+                    memory_reset();
+                    via_reset();
+                    ay_reset();
+                    cpu_reset();
+                    file_passed_on_cli = true;
+                    wchar_t title[512];
+                    const wchar_t *base = wcsrchr(p, L'\\');
+                    if (!base) base = wcsrchr(p, L'/');
+                    swprintf(title, 512, L"Oric Atmos - [Disque : %ls]", base ? base + 1 : p);
+                    SetWindowTextW(hwnd, title);
+                }
             }
         }
     }
@@ -475,6 +501,9 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
             cpu_step();
             uint32_t elapsed = (uint32_t)(g_cpu.cycles - before);
             via_step(elapsed);
+            if (g_microdisc_active) {
+                fdc_step(elapsed);
+            }
         }
 
         video_render_frame();

@@ -19,7 +19,7 @@ rem -lgdi32   : lie la bibliotheque graphique Windows GDI
 rem -lwinmm   : lie la bibliotheque multimedia Windows
 rem -lshell32 : lie la bibliotheque Windows Shell
 
-gcc -O3 -s -static -municode -mwindows common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c browser.c main.c -o %app% -lgdi32 -lwinmm -lshell32
+gcc -O3 -s -static -municode -mwindows common.c cpu.c memory.c fdc.c via.c ay38912.c keyboard.c tape.c video.c browser.c main.c -o %app% -lgdi32 -lwinmm -lshell32
 copy /y %app% ..\%app% >nul 2>nul
 
 if %errorlevel% equ 0 (

@@ -1,6 +1,7 @@
 #include "memory.h"
 #include "via.h"
 #include "video.h"
+#include "fdc.h"
 
 uint8_t g_ram[65536] = {0};
 uint8_t g_rom[16384] = {0};
@@ -8,7 +9,8 @@ bool g_rom_loaded = false;
 
 uint8_t g_microdis_rom[8192] = {0};
 bool g_microdis_loaded = false;
-uint8_t g_microdis_control = 0x04; /* Microdisc: 0x04 = ROM désactivée par défaut */
+bool g_romdis = false;
+bool g_microdis_eprom = false;
 
 bool rom_has_atmos_font(void) {
     if (!g_rom_loaded) return false;
@@ -19,8 +21,15 @@ bool rom_has_atmos_font(void) {
 
 void memory_reset(void) {
     memset(g_ram, 0, sizeof(g_ram));
-    g_microdis_control = 0x04;
     g_hires_mode = false;
+
+    if (g_microdisc_active) {
+        g_romdis = true;
+        g_microdis_eprom = true;
+    } else {
+        g_romdis = false;
+        g_microdis_eprom = false;
+    }
 
     /* Toujours garantir une police valide en RAM à 0xB400 */
     memcpy(&g_ram[0xB400 + 32 * 8], ORIC_FONT_STANDARD, sizeof(ORIC_FONT_STANDARD));
@@ -70,20 +79,35 @@ bool oric_load_microdis_rom(const wchar_t *path) {
 }
 
 uint8_t mem_read(uint16_t addr) {
-    /* Contrôleur Microdisc FDC registres (0x0310 - 0x0318) */
-    if ((addr & 0xFFF8) == 0x0310) {
-        uint8_t reg = addr & 0x07;
-        switch (reg) {
-            case 0: return 0x80; /* FDC Status: ready */
-            case 1: return 0;    /* Track */
-            case 2: return 1;    /* Sector */
-            case 3: return 0;    /* Data */
-            case 4: return g_microdis_control;
-            default: return 0xFF;
+    if (g_microdisc_active) {
+        /* Registres I/O sur la plage 0x0300 - 0x03FF */
+        if ((addr & 0xFF00) == 0x0300) {
+            if (addr >= 0x0310 && addr < 0x031C) {
+                return fdc_read(addr);
+            }
+            if (addr >= 0x0300 && addr <= 0x030F) {
+                return via_read(addr & 0x0F);
+            }
+            return 0xFF;
+        }
+
+        /* Routage mémoire haute (0xC000 - 0xFFFF) */
+        if (g_romdis) {
+            /* ROM BASIC désactivée : overlay RAM ou ROM Microdisc */
+            if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
+                return g_microdis_rom[addr - 0xE000];
+            }
+            return g_ram[addr];
+        } else {
+            /* ROM BASIC Atmos active */
+            if (addr >= 0xC000 && g_rom_loaded) {
+                return g_rom[addr - 0xC000];
+            }
+            return g_ram[addr];
         }
     }
 
-    /* Registres VIA 6522 (0x0300 - 0x030F) */
+    /* Mode Oric Atmos standard sans unité de disquette */
     if ((addr & 0xFF00) == 0x0300) {
         if ((addr & 0xFFF0) == 0x0300) {
             return via_read(addr & 0x0F);
@@ -91,34 +115,45 @@ uint8_t mem_read(uint16_t addr) {
         return 0xFF;
     }
 
-    /* Microdisc ROM (0xE000 - 0xFFFF) */
-    if (addr >= 0xE000 && g_microdis_loaded) {
-        if (!(g_microdis_control & 0x04)) {
-            return g_microdis_rom[addr - 0xE000];
-        }
-    }
-
-    /* Oric Atmos Basic ROM (0xC000 - 0xFFFF) */
-    if (addr >= 0xC000) {
-        if (g_rom_loaded) {
-            return g_rom[addr - 0xC000];
-        }
+    if (addr >= 0xC000 && g_rom_loaded) {
+        return g_rom[addr - 0xC000];
     }
 
     return g_ram[addr];
 }
 
 void mem_write(uint16_t addr, uint8_t val) {
-    /* Contrôleur Microdisc */
-    if ((addr & 0xFFF8) == 0x0310) {
-        uint8_t reg = addr & 0x07;
-        if (reg == 4) {
-            g_microdis_control = val;
+    if (g_microdisc_active) {
+        /* Registres I/O 0x0300 - 0x03FF */
+        if ((addr & 0xFF00) == 0x0300) {
+            if (addr >= 0x0310 && addr < 0x031C) {
+                fdc_write(addr, val);
+                return;
+            }
+            if (addr >= 0x0300 && addr <= 0x030F) {
+                via_write(addr & 0x0F, val);
+                return;
+            }
+            return;
         }
-        return;
+
+        /* Routage mémoire haute */
+        if (g_romdis) {
+            if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
+                return; /* EPROM Microdisc protégée en écriture */
+            }
+            g_ram[addr] = val;
+            return;
+        } else {
+            if (addr >= 0xC000) {
+                return; /* ROM BASIC protégée en écriture */
+            }
+            g_ram[addr] = val;
+            return;
+        }
     }
 
-    /* Registres VIA 6522 */
+    /* Mode Oric Atmos standard */
     if ((addr & 0xFF00) == 0x0300) {
         if ((addr & 0xFFF0) == 0x0300) {
             via_write(addr & 0x0F, val);
@@ -126,6 +161,9 @@ void mem_write(uint16_t addr, uint8_t val) {
         return;
     }
 
-    /* Écriture en RAM */
+    if (addr >= 0xC000) {
+        return; /* ROM BASIC protégée */
+    }
+
     g_ram[addr] = val;
 }
