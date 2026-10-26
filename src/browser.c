@@ -4,8 +4,11 @@
 #include "via.h"
 #include "ay38912.h"
 #include "tape.h"
+#include "keyboard.h"
+#include "video.h"
 
 FileBrowser g_browser;
+static uint8_t s_browser_screen[28 * 40];
 
 static void get_ini_path(wchar_t *out_path, size_t max_len) {
     GetModuleFileNameW(NULL, out_path, (DWORD)max_len);
@@ -170,8 +173,9 @@ static void sanitize_for_oric(char *str) {
 }
 
 void browser_render(void) {
-    /* Écran Oric en mémoire vidéo : 28 lignes de 40 colonnes en 0xBB80 */
-    uint8_t *screen = &g_ram[0xBB80];
+    /* Écran privé dédié à l'explorateur (28 lignes de 40 colonnes) :
+     * n'écrase JAMAIS la mémoire RAM de l'émulateur et reste 100% lisible */
+    uint8_t *screen = s_browser_screen;
     memset(screen, 0x20, 28 * 40);
 
     /* Ligne 0 : Bannière supérieure (Fond bleu 16+4, Texte blanc 7) */
@@ -268,6 +272,48 @@ void browser_render(void) {
     const char *help2 = " [Echap] Quitter explorateur (BASIC)   ";
     for (int i = 0; i < 38 && help2[i]; i++) {
         screen[27 * 40 + 2 + i] = (uint8_t)help2[i];
+    }
+}
+
+void browser_draw(void) {
+    /* Dessin direct du buffer explorateur dans g_framebuffer avec la police standard et la palette Oric.
+     * Cette fonction est totalement indépendante du mode HIRES ou d'une quelconque corruption RAM/ROM. */
+    for (int row = 0; row < 28; row++) {
+        uint32_t ink = PALETTE[7];
+        uint32_t paper = PALETTE[0];
+
+        for (int col = 0; col < 40; col++) {
+            uint8_t ch = s_browser_screen[row * 40 + col];
+
+            if ((ch & 0x60) == 0) {
+                uint8_t attr = ch & 0x1F;
+                if (attr < 8) {
+                    ink = PALETTE[attr];
+                } else if (attr >= 16 && attr < 24) {
+                    paper = PALETTE[attr & 7];
+                }
+                uint32_t cell_color = (ch & 0x80) ? ink : paper;
+                for (int cy = 0; cy < 8; cy++) {
+                    int y = row * 8 + cy;
+                    for (int p = 0; p < 6; p++) {
+                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = cell_color;
+                    }
+                }
+            } else {
+                uint8_t char_code = ch & 0x7F;
+                for (int cy = 0; cy < 8; cy++) {
+                    int y = row * 8 + cy;
+                    uint8_t pattern = 0;
+                    if (char_code >= 32 && char_code < 128) {
+                        pattern = ORIC_FONT_STANDARD[(char_code - 32) * 8 + cy];
+                    }
+                    for (int p = 0; p < 6; p++) {
+                        bool dot = (pattern & (1 << (5 - p))) != 0;
+                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = dot ? ink : paper;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -371,6 +417,8 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
                 memory_reset();
                 via_reset();
                 ay_reset();
+                keyboard_reset();
+                tape_reset();
                 cpu_reset();
                 g_browser.active = false;
                 SetWindowTextW(hwnd, L"Oric Atmos - [Nouvelle ROM chargée]");
@@ -380,8 +428,10 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
                 memory_reset();
                 via_reset();
                 ay_reset();
-                cpu_reset();
+                keyboard_reset();
+                tape_reset();
                 g_tape.auto_cload_triggered = false; /* Auto-CLOAD au boot BASIC (2.0s) */
+                cpu_reset();
                 g_browser.active = false;
                 wchar_t title[512];
                 swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]",
@@ -393,6 +443,8 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
                 memory_reset();
                 via_reset();
                 ay_reset();
+                keyboard_reset();
+                tape_reset();
                 cpu_reset();
                 g_browser.active = false;
                 SetWindowTextW(hwnd, L"Oric Atmos - [Disque chargé]");

@@ -6,7 +6,7 @@ BITMAPINFO g_bmi;
 bool g_hires_mode = false;
 static int g_frame_counter = 0;
 
-static const uint8_t ORIC_FONT_STANDARD[768] = {
+const uint8_t ORIC_FONT_STANDARD[768] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x08, 0x00,
     0x14, 0x14, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14, 0x14, 0x3E, 0x14, 0x3E, 0x14, 0x14, 0x00,
     0x08, 0x1E, 0x28, 0x1C, 0x0A, 0x3C, 0x08, 0x00, 0x30, 0x32, 0x04, 0x08, 0x10, 0x26, 0x06, 0x00,
@@ -74,23 +74,25 @@ void video_init(void) {
 
 void video_render_frame(void) {
     /* Détection fiable du mode vidéo (HIRES vs TEXT) :
-     * 1. Attribut matériel ULA stocké à 0xBFDF (28..31 = HIRES, 24..27 = TEXT)
+     * 1. Attribut matériel ULA stocké à 0xBFDF ou 0xBF3F (28..31 = HIRES, 24..27 = TEXT)
      * 2. Si 0xBFDF a été écrasé (ex: affichage de caractères ou défilement),
      *    on consulte les drapeaux officiels du système :
      *    - 0x021F : Drapeau mode écran ROM Atmos (1 = HIRES, 0 = TEXT)
      *    - 0x02C0 bit 0 : Drapeau mode écran BASIC Atmos (1 = HIRES, 0 = TEXT)
-     *    (Ne JAMAIS tester 0x026A qui a le bit 0 à 1 en mode TEXT !)
      */
-    uint8_t mode_byte = g_ram[0xBFDF];
+    uint8_t mode_byte = g_ram[0xBFDF] & 0x1F;
+    if (mode_byte < 24 || mode_byte > 31) {
+        mode_byte = g_ram[0xBF3F] & 0x1F;
+    }
     if (mode_byte >= 28 && mode_byte <= 31) {
         if (!g_hires_mode) {
             g_hires_mode = true;
-            debug_log(L"Bascule vidéo vers mode HIRES (attribut ULA 0xBFDF = %d)", mode_byte);
+            debug_log(L"Bascule vidéo vers mode HIRES (attribut ULA = %d)", mode_byte);
         }
     } else if (mode_byte >= 24 && mode_byte <= 27) {
         if (g_hires_mode) {
             g_hires_mode = false;
-            debug_log(L"Bascule vidéo vers mode TEXT (attribut ULA 0xBFDF = %d)", mode_byte);
+            debug_log(L"Bascule vidéo vers mode TEXT (attribut ULA = %d)", mode_byte);
         }
     } else {
         bool is_hires = (g_ram[0x021F] != 0) || ((g_ram[0x02C0] & 1) != 0);
@@ -119,14 +121,25 @@ void video_render_frame(void) {
             for (int col = 0; col < 40; col++) {
                 uint8_t byte = g_ram[line_addr + col];
                 if ((byte & 0x60) == 0) {
-                    if (byte < 8) ink = PALETTE[byte & 7];
-                    else if (byte >= 16 && byte < 24) paper = PALETTE[byte & 7];
+                    uint8_t attr = byte & 0x1F;
+                    if (attr < 8) {
+                        ink = PALETTE[attr];
+                    } else if (attr >= 8 && attr < 16) {
+                        blinking = (attr & 4) != 0;
+                    } else if (attr >= 16 && attr < 24) {
+                        paper = PALETTE[attr & 7];
+                    }
+                    /* Cellule d'attribut : couleur de fond active (ou ink si bit 7 inverse) */
+                    uint32_t cell_color = (byte & 0x80) ? ink : paper;
                     for (int p = 0; p < 6; p++) {
-                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = paper;
+                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = cell_color;
                     }
                 } else {
+                    bool inverse = (byte & 0x80) != 0;
                     for (int p = 0; p < 6; p++) {
                         bool pixel_on = (byte & (1 << (5 - p))) != 0;
+                        if (inverse) pixel_on = !pixel_on;
+                        if (blinking && blink_phase) pixel_on = false;
                         g_framebuffer[y * SCREEN_W + (col * 6 + p)] = pixel_on ? ink : paper;
                     }
                 }
@@ -142,17 +155,20 @@ void video_render_frame(void) {
                 uint8_t ch = g_ram[row_addr + col];
 
                 if ((ch & 0x60) == 0) {
-                    if (ch < 8) {
-                        ink = PALETTE[ch & 7];
-                    } else if (ch >= 8 && ch < 16) {
-                        alt_charset = (ch & 1) != 0;
-                        double_height = (ch & 2) != 0;
-                        blinking = (ch & 4) != 0;
-                    } else if (ch >= 16 && ch < 24) {
-                        paper = PALETTE[ch & 7];
+                    uint8_t attr = ch & 0x1F;
+                    if (attr < 8) {
+                        ink = PALETTE[attr];
+                    } else if (attr >= 8 && attr < 16) {
+                        alt_charset = (attr & 1) != 0;
+                        double_height = (attr & 2) != 0;
+                        blinking = (attr & 4) != 0;
+                    } else if (attr >= 16 && attr < 24) {
+                        paper = PALETTE[attr & 7];
                     }
+                    /* Cellule d'attribut : couleur de fond active (ou ink si bit 7 inverse) */
+                    uint32_t cell_color = (ch & 0x80) ? ink : paper;
                     for (int p = 0; p < 6; p++) {
-                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = paper;
+                        g_framebuffer[y * SCREEN_W + (col * 6 + p)] = cell_color;
                     }
                 } else {
                     bool inverse = (ch & 0x80) != 0;
@@ -171,7 +187,7 @@ void video_render_frame(void) {
                     uint8_t pattern = g_ram[glyph_addr];
 
                     if (pattern == 0 && g_ram[font_base + 65 * 8 + 4] == 0 && char_code >= 32 && char_code < 128) {
-                        if (g_rom_loaded && !alt_charset) {
+                        if (rom_has_atmos_font() && !alt_charset) {
                             pattern = g_rom[0xFC78 - 0xC000 + (char_code - 32) * 8 + glyph_line];
                         } else {
                             pattern = ORIC_FONT_STANDARD[(char_code - 32) * 8 + glyph_line];

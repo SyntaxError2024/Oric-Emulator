@@ -1,5 +1,6 @@
 #include "memory.h"
 #include "via.h"
+#include "video.h"
 
 uint8_t g_ram[65536] = {0};
 uint8_t g_rom[16384] = {0};
@@ -9,9 +10,23 @@ uint8_t g_microdis_rom[8192] = {0};
 bool g_microdis_loaded = false;
 uint8_t g_microdis_control = 0x04; /* Microdisc: 0x04 = ROM désactivée par défaut */
 
+bool rom_has_atmos_font(void) {
+    if (!g_rom_loaded) return false;
+    /* Vérifier la signature du caractère '!' (code 33) à 0xFC78 + 8 */
+    const uint8_t *f = &g_rom[0xFC78 - 0xC000];
+    return (f[8 + 1] == 0x08 && f[8 + 2] == 0x08 && f[8 + 6] == 0x08);
+}
+
 void memory_reset(void) {
     memset(g_ram, 0, sizeof(g_ram));
     g_microdis_control = 0x04;
+    g_hires_mode = false;
+
+    /* Toujours garantir une police valide en RAM à 0xB400 */
+    memcpy(&g_ram[0xB400 + 32 * 8], ORIC_FONT_STANDARD, sizeof(ORIC_FONT_STANDARD));
+    if (rom_has_atmos_font()) {
+        memcpy(&g_ram[0xB400 + 32 * 8], &g_rom[0xFC78 - 0xC000], sizeof(ORIC_FONT_STANDARD));
+    }
 }
 
 bool oric_load_rom(const wchar_t *path) {
@@ -23,9 +38,13 @@ bool oric_load_rom(const wchar_t *path) {
 
     if (n == 16384) {
         g_rom_loaded = true;
-        /* Pré-remplir la police en RAM à 0xB400 à partir de la ROM chargée */
-        memcpy(&g_ram[0xB400 + 32 * 8], &g_rom[0xFC78 - 0xC000], 768);
-        debug_log(L"ROM chargée : %ls (16384 octets)", path);
+        /* Pré-remplir la police en RAM à 0xB400 avec la police Atmos si présente, sinon police standard */
+        if (rom_has_atmos_font()) {
+            memcpy(&g_ram[0xB400 + 32 * 8], &g_rom[0xFC78 - 0xC000], sizeof(ORIC_FONT_STANDARD));
+        } else {
+            memcpy(&g_ram[0xB400 + 32 * 8], ORIC_FONT_STANDARD, sizeof(ORIC_FONT_STANDARD));
+        }
+        debug_log(L"ROM chargée : %ls (16384 octets, Atmos font=%d)", path, rom_has_atmos_font());
         return true;
     } else {
         debug_log(L"Erreur : Taille ROM incorrecte (%u octets)", (unsigned)n);

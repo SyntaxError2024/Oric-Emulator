@@ -33,6 +33,7 @@ extern FileBrowser g_browser;
 void browser_init(void);
 void browser_refresh(void);
 void browser_render(void);
+void browser_draw(void);
 bool browser_handle_key(UINT vk, HWND hwnd);
 void browser_load_settings(void);
 void browser_save_settings(void);

@@ -16,5 +16,6 @@ void mem_write(uint16_t addr, uint8_t val);
 
 bool oric_load_rom(const wchar_t *path);
 bool oric_load_microdis_rom(const wchar_t *path);
+bool rom_has_atmos_font(void);
 
 #endif /* MEMORY_H */

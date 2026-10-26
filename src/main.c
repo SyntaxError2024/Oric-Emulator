@@ -135,10 +135,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 } else if (ext && (_wcsicmp(ext, L".rom") == 0)) {
                     debug_log(L"Fichier .ROM déposé : %ls", filename);
                     oric_load_rom(filename);
-                    cpu_reset();
+                    g_browser.active = false;
+                    memory_reset();
                     via_reset();
                     ay_reset();
                     keyboard_reset();
+                    tape_reset();
+                    cpu_reset();
                     SetWindowTextW(hwnd, L"Oric Atmos - [Nouvelle ROM chargée]");
                 }
             }
@@ -178,11 +181,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             if (wParam == VK_F5) {
                 debug_log(L"Réinitialisation matérielle (Reset F5)");
-                cpu_reset();
+                g_browser.active = false;
+                memory_reset();
                 via_reset();
                 ay_reset();
                 keyboard_reset();
                 tape_reset();
+                cpu_reset();
                 return 0;
             }
             if (wParam == VK_F1) {
@@ -449,7 +454,7 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         /* Si l'explorateur de fichiers est actif, on l'affiche et on met en pause l'émulation CPU */
         if (g_browser.active) {
             browser_render();
-            video_render_frame();
+            browser_draw();
             InvalidateRect(hwnd, NULL, FALSE);
 
             DWORD now = timeGetTime();
