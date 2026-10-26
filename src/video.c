@@ -73,39 +73,69 @@ void video_init(void) {
 }
 
 void video_render_frame(void) {
-    /* Détection fiable du mode vidéo (HIRES vs TEXT) :
-     * 1. Attribut matériel ULA stocké à 0xBFDF ou 0xBF3F (28..31 = HIRES, 24..27 = TEXT)
-     * 2. Si 0xBFDF a été écrasé (ex: affichage de caractères ou défilement),
-     *    on consulte les drapeaux officiels du système :
-     *    - 0x021F : Drapeau mode écran ROM Atmos (1 = HIRES, 0 = TEXT)
-     *    - 0x02C0 bit 0 : Drapeau mode écran BASIC Atmos (1 = HIRES, 0 = TEXT)
+    /* Détermination du mode vidéo initial en haut de l'écran (scanline 0) :
+     * 1. Attribut explicite de début d'écran à 0xA000 ou 0xBB80 (30 = HIRES, 26 = TEXT)
+     * 2. Attribut ULA de fin d'écran à 0xBFDF (28..31 = HIRES, 24..27 = TEXT)
+     * 3. Drapeaux système officiels (0x021F = 1 pour HIRES, 0x02C0 bit 0)
      */
-    uint8_t mode_byte = g_ram[0xBFDF] & 0x1F;
-    if (mode_byte < 24 || mode_byte > 31) {
-        mode_byte = g_ram[0xBF3F] & 0x1F;
-    }
-    if (mode_byte >= 28 && mode_byte <= 31) {
-        if (!g_hires_mode) {
-            g_hires_mode = true;
-            debug_log(L"Bascule vidéo vers mode HIRES (attribut ULA = %d)", mode_byte);
-        }
-    } else if (mode_byte >= 24 && mode_byte <= 27) {
-        if (g_hires_mode) {
-            g_hires_mode = false;
-            debug_log(L"Bascule vidéo vers mode TEXT (attribut ULA = %d)", mode_byte);
-        }
+    bool initial_hires = false;
+    uint8_t b0_start = g_ram[0xA000];
+    uint8_t t0_start = g_ram[0xBB80];
+
+    if ((b0_start & 0x60) == 0 && (b0_start & 0x1F) >= 28 && (b0_start & 0x1F) <= 31) {
+        initial_hires = true;
+    } else if ((t0_start & 0x60) == 0 && (t0_start & 0x1F) >= 28 && (t0_start & 0x1F) <= 31) {
+        initial_hires = true;
     } else {
-        bool is_hires = (g_ram[0x021F] != 0) || ((g_ram[0x02C0] & 1) != 0);
-        if (is_hires != g_hires_mode) {
-            g_hires_mode = is_hires;
-            debug_log(L"Bascule vidéo vers mode %ls (drapeaux 0x021F=%d, 0x02C0=%d)",
-                      is_hires ? L"HIRES" : L"TEXT", g_ram[0x021F], g_ram[0x02C0]);
+        uint8_t mode_byte = g_ram[0xBFDF] & 0x1F;
+        if (mode_byte >= 28 && mode_byte <= 31) {
+            initial_hires = true;
+        } else if (mode_byte >= 24 && mode_byte <= 27 && g_ram[0x021F] == 0) {
+            initial_hires = false;
+        } else if (g_ram[0x021F] != 0 || ((g_ram[0x02C0] & 1) != 0)) {
+            initial_hires = true;
+        } else if (mode_byte >= 24 && mode_byte <= 27) {
+            initial_hires = false;
+        } else {
+            initial_hires = g_hires_mode;
         }
     }
 
+    g_hires_mode = initial_hires;
+    bool current_hires = initial_hires;
     bool blink_phase = (g_frame_counter / 16) & 1;
 
     for (int y = 0; y < 224; y++) {
+        /* À partir de la scanline 200, le compteur de balayage ULA force le basculement
+         * vers le mode TEXT pour les 3 rangées de texte de bas d'écran (lignes 200..223). */
+        if (y >= 200) {
+            current_hires = false;
+        } else {
+            /* Avant la ligne 200, gestion du split-screen / mode mixte scanline par scanline :
+             * Vérification des attributs ULA de changement de mode au début de la ligne */
+            if (current_hires) {
+                uint8_t b0 = g_ram[0xA000 + (y * 40)];
+                if ((b0 & 0x60) == 0 && (b0 & 0x1F) >= 24 && (b0 & 0x1F) <= 27) {
+                    current_hires = false;
+                } else if (y % 8 == 0) {
+                    uint8_t t0 = g_ram[0xBB80 + ((y / 8) * 40)];
+                    if ((t0 & 0x60) == 0 && (t0 & 0x1F) >= 24 && (t0 & 0x1F) <= 27) {
+                        current_hires = false;
+                    }
+                }
+            } else {
+                uint8_t t0 = g_ram[0xBB80 + ((y / 8) * 40)];
+                if ((t0 & 0x60) == 0 && (t0 & 0x1F) >= 28 && (t0 & 0x1F) <= 31) {
+                    current_hires = true;
+                } else {
+                    uint8_t b0 = g_ram[0xA000 + (y * 40)];
+                    if ((b0 & 0x60) == 0 && (b0 & 0x1F) >= 28 && (b0 & 0x1F) <= 31) {
+                        current_hires = true;
+                    }
+                }
+            }
+        }
+
         uint32_t ink = PALETTE[7];
         uint32_t paper = PALETTE[0];
         bool double_height = false;
@@ -114,9 +144,8 @@ void video_render_frame(void) {
 
         int row = y / 8;
         int char_line = y % 8;
-        bool in_hires_area = g_hires_mode && (y < 200);
 
-        if (in_hires_area) {
+        if (current_hires) {
             uint16_t line_addr = 0xA000 + (y * 40);
             for (int col = 0; col < 40; col++) {
                 uint8_t byte = g_ram[line_addr + col];
@@ -128,6 +157,10 @@ void video_render_frame(void) {
                         blinking = (attr & 4) != 0;
                     } else if (attr >= 16 && attr < 24) {
                         paper = PALETTE[attr & 7];
+                    } else if (attr >= 24 && attr <= 27) {
+                        current_hires = false;
+                    } else if (attr >= 28 && attr <= 31) {
+                        current_hires = true;
                     }
                     /* Cellule d'attribut : couleur de fond active (ou ink si bit 7 inverse) */
                     uint32_t cell_color = (byte & 0x80) ? ink : paper;
@@ -145,10 +178,8 @@ void video_render_frame(void) {
                 }
             }
         } else {
-            /* En mode HIRES, les 3 lignes de texte du bas correspondent aux lignes 25, 26, 27
-             * situées en mémoire écran ULA à 0xBF68, 0xBF90, 0xBFB8 (0xBB80 + text_row * 40).
-             */
-            int text_row = g_hires_mode ? (25 + ((y - 200) / 8)) : row;
+            /* Mode TEXT (y < 200 en zone texte mixte, ou y >= 200 en pied de page ULA) */
+            int text_row = row;
             uint16_t row_addr = 0xBB80 + (text_row * 40);
 
             for (int col = 0; col < 40; col++) {
@@ -164,6 +195,10 @@ void video_render_frame(void) {
                         blinking = (attr & 4) != 0;
                     } else if (attr >= 16 && attr < 24) {
                         paper = PALETTE[attr & 7];
+                    } else if (attr >= 24 && attr <= 27) {
+                        current_hires = false;
+                    } else if (attr >= 28 && attr <= 31) {
+                        if (y < 200) current_hires = true;
                     }
                     /* Cellule d'attribut : couleur de fond active (ou ink si bit 7 inverse) */
                     uint32_t cell_color = (ch & 0x80) ? ink : paper;
@@ -174,13 +209,21 @@ void video_render_frame(void) {
                     bool inverse = (ch & 0x80) != 0;
                     uint8_t char_code = ch & 0x7F;
 
-                    /* En mode HIRES, la police de caractères est déplacée par l'ULA en 0x9800 (standard)
-                     * et 0x9C00 (alternative) au lieu de 0xB400/0xB800 (qui est la mémoire bitmap graphique).
-                     */
-                    uint16_t font_base = g_hires_mode ? (alt_charset ? 0x9C00 : 0x9800)
-                                                       : (alt_charset ? 0xB800 : 0xB400);
-                    /* En double hauteur Oric, la moitié haute (lignes 0..3) s'affiche sur les rangées paires
-                     * et la moitié basse (lignes 4..7) sur les rangées impaires, chaque ligne étant doublée */
+                    /* En mode HIRES ou mixte HIRES, la police est en 0x9800/0x9C00 au lieu de 0xB400/0xB800.
+                     * On vérifie si 0x9800 ou 0xB400 contient une police personnalisée en RAM. */
+                    uint16_t font_base;
+                    if (initial_hires || current_hires) {
+                        font_base = alt_charset ? 0x9C00 : 0x9800;
+                        if (g_ram[font_base + 65 * 8 + 4] == 0 && g_ram[(alt_charset ? 0xB800 : 0xB400) + 65 * 8 + 4] != 0) {
+                            font_base = alt_charset ? 0xB800 : 0xB400;
+                        }
+                    } else {
+                        font_base = alt_charset ? 0xB800 : 0xB400;
+                        if (g_ram[font_base + 65 * 8 + 4] == 0 && g_ram[(alt_charset ? 0x9C00 : 0x9800) + 65 * 8 + 4] != 0) {
+                            font_base = alt_charset ? 0x9C00 : 0x9800;
+                        }
+                    }
+
                     int glyph_line = double_height ? ((text_row & 1) ? (4 + (char_line / 2)) : (char_line / 2)) : char_line;
                     uint16_t glyph_addr = font_base + (char_code * 8) + glyph_line;
 
