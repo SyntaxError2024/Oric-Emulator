@@ -203,11 +203,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                  * on l'ignore car la ROM Oric Atmos gère elle-même la répétition matérielle à 100 Hz */
                 return 0;
             }
-            keyboard_handle_vk((UINT)wParam, true);
+
+            /*
+            UINT scanCode = (UINT)((lParam >> 16) & 0xFF);
+BOOL extended = (lParam & (1L << 24)) != 0;
+            */
+            keyboard_handle_vk((UINT)wParam, lParam,true);
             return 0;
 
         case WM_KEYUP:
-            keyboard_handle_vk((UINT)wParam, false);
+            keyboard_handle_vk((UINT)wParam, lParam,false);
             return 0;
 
         case WM_CHAR:
@@ -495,11 +500,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     if (n == 0 || n >= MAX_PATH)
         return 1;
-    
-    
+
+
 
     wchar_t *slash = wcsrchr(path, L'\\');
-    
+
     if (slash == NULL)
         return 1;
 

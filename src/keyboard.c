@@ -22,8 +22,28 @@ void keyboard_reset(void) {
     memset(g_typein_buffer, 0, sizeof(g_typein_buffer));
 }
 
+void setBit(int row, int bit, UINT pressed)
+{
+    if (pressed)
+        g_key_matrix[row] |= (unsigned char)(1u << bit);
+    else
+        g_key_matrix[row] &= (unsigned char)~(1u << bit);
+}
+
 void keyboard_set_key(int row, int col, bool pressed) {
+
     if (row < 0 || row > 7 || col < 0 || col > 7) return;
+
+    UINT lshift = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0; // 4 4
+    UINT rshift = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0; // 7 4
+    UINT lctrl  = (GetAsyncKeyState(VK_LCONTROL) & 0x8000)!=0; // 2 4
+    UINT rctrl  = (GetAsyncKeyState(VK_RCONTROL) & 0x8000)!=0; // 5 4
+
+    setBit(4,4,lshift);
+    setBit(7,4,rshift);
+    setBit(2,4,lctrl);
+    setBit(5,4,rctrl);
+
     if (pressed) {
         g_key_matrix[row] |= (1 << col);
     } else {
@@ -41,6 +61,11 @@ uint8_t keyboard_read_bit(uint8_t row, uint8_t col_mask) {
  * Table issue directement du décodage ROM Atmos ($FF78)
  * ============================================================================ */
 bool keyboard_char_to_matrix(char ch, int *out_row, int *out_col, bool *out_shift) {
+
+    if (true) return false; //@todo
+
+    printf("keyboard_char_to_matrix() %d\n",ch);
+
     if (!out_row || !out_col || !out_shift) return false;
     *out_shift = false;
 
@@ -56,7 +81,7 @@ bool keyboard_char_to_matrix(char ch, int *out_row, int *out_col, bool *out_shif
         /* Symboles décalés (Shift requis sur Atmos) */
         case '!': *out_row = 0; *out_col = 5; *out_shift = true; return true;
         case '"': *out_row = 3; *out_col = 7; *out_shift = true; return true; /* Shift + ' donne " */
-        case '#': *out_row = 0; *out_col = 7; *out_shift = true; return true; /* Shift + 3 donne # */
+        // case '#': *out_row = 0; *out_col = 7; *out_shift = true; return true; /* Shift + 3 donne # */
         case '$': *out_row = 2; *out_col = 3; *out_shift = true; return true;
         case '%': *out_row = 0; *out_col = 2; *out_shift = true; return true;
         case '&': *out_row = 0; *out_col = 0; *out_shift = true; return true;
@@ -134,103 +159,103 @@ bool keyboard_char_to_matrix(char ch, int *out_row, int *out_col, bool *out_shif
  * GESTION DES TOUCHES PHYSIQUES WINDOWS (VK_*)
  * Support complet AZERTY et QWERTY
  * ============================================================================ */
-void keyboard_handle_vk(UINT vk, bool pressed) {
+void keyboard_handle_vk(UINT vk, DWORD scancode, bool pressed) {
+
+    WCHAR key=(vk<32)?32:vk;
+
+    scancode=scancode >> 16 & 0x3fff;
+
+    debug_log(L"Clavier : VK=0x%02X SC=%02X %c", vk,scancode,key);
+
     int row = -1, col = -1;
 
-    switch (vk) {
-        case VK_SPACE:   row = 4; col = 0; break;
-        case VK_RETURN:  row = 7; col = 5; break;
-        case VK_ESCAPE:  row = 1; col = 5; break;
-        case VK_BACK:
-        case VK_DELETE:  row = 5; col = 5; break; /* Oric Atmos: Touche DEL (5,5) = Effacement réel du caractère */
-        case VK_TAB:     row = 4; col = 7; break;
+    switch (scancode) {
+        case 0x0b: case 0x52: row = 7; col = 2; break; // 0
+        case 0x02: case 0x4f: row = 0; col = 5; break; // 1
+        case 0x03: case 0x50: row = 2; col = 6; break; // 2
+        case 0x04: case 0x51: row = 0; col = 7; break; // 3
+        case 0x05: case 0x4b: row = 2; col = 3; break; // 4
+        case 0x06: case 0x4c: row = 0; col = 2; break; // 5
+        case 0x07: case 0x4d: row = 2; col = 1; break; // 6
+        case 0x08: case 0x47: row = 0; col = 0; break; // 7
+        case 0x09: case 0x48: row = 7; col = 0; break; // 8
+        case 0x0a: case 0x49: row = 3; col = 1; break; // 9
+        case 0x0c: row = 3; col = 3; break; // -£
+        case 0x0d: row = 7; col = 7; break; // =+
 
-        case VK_SHIFT:
-        case VK_LSHIFT:
-        case VK_RSHIFT:  row = 4; col = 4; break;
+        case 0x0E: row = 5; col = 5; break; // Backspace
 
-        case VK_CONTROL:
-        case VK_LCONTROL:
-        case VK_RCONTROL: row = 2; col = 4; break;
 
-        case VK_LEFT:    row = 4; col = 5; break;
-        case VK_RIGHT:   row = 4; col = 7; break;
-        case VK_DOWN:    row = 4; col = 6; break;
-        case VK_UP:      row = 4; col = 3; break;
-
-        case '0': case VK_NUMPAD0: row = 7; col = 2; break;
-        case '1': case VK_NUMPAD1: row = 0; col = 5; break;
-        case '2': case VK_NUMPAD2: row = 2; col = 6; break;
-
+/*
         case '3': {
-            /* Touche '3' du clavier :
-             * Sur clavier AZERTY : sans Shift c'est '"' (guillemet).
-             * Sur clavier QWERTY : sans Shift c'est '3'.
-             * Pour permettre la saisie directe de '"' et '3' :
-             */
             bool shift_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (shift_down) {
-                /* Touche 3 */
                 row = 0; col = 7;
             } else {
-                /* Sur un clavier français, la touche 3 non décalée est le guillemet " */
                 row = 3; col = 7;
-                keyboard_set_key(4, 4, pressed); /* Maintient Shift pour produire '"' sur Oric */
+                keyboard_set_key(4, 4, pressed);
             }
             break;
         }
         case VK_NUMPAD3: row = 0; col = 7; break;
+*/
 
-        case '4': case VK_NUMPAD4: row = 2; col = 3; break;
-        case '5': case VK_NUMPAD5: row = 0; col = 2; break;
-        case '6': case VK_NUMPAD6: row = 2; col = 1; break;
-        case '7': case VK_NUMPAD7: row = 0; col = 0; break;
-        case '8': case VK_NUMPAD8: row = 7; col = 0; break;
-        case '9': case VK_NUMPAD9: row = 3; col = 1; break;
 
-        case 'A': row = 6; col = 5; break;
-        case 'B': row = 2; col = 2; break;
-        case 'C': row = 2; col = 7; break;
-        case 'D': row = 1; col = 7; break;
-        case 'E': row = 6; col = 3; break;
-        case 'F': row = 1; col = 3; break;
-        case 'G': row = 6; col = 2; break;
-        case 'H': row = 6; col = 1; break;
-        case 'I': row = 5; col = 1; break;
-        case 'J': row = 1; col = 0; break;
-        case 'K': row = 3; col = 0; break;
-        case 'L': row = 7; col = 1; break;
-        case 'M': row = 2; col = 0; break;
-        case 'N': row = 0; col = 1; break;
-        case 'O': row = 5; col = 2; break;
-        case 'P': row = 5; col = 3; break;
-        case 'Q': row = 1; col = 6; break;
-        case 'R': row = 1; col = 2; break;
-        case 'S': row = 6; col = 6; break;
-        case 'T': row = 1; col = 1; break;
-        case 'U': row = 5; col = 0; break;
-        case 'V': row = 0; col = 3; break;
-        case 'W': row = 6; col = 7; break;
-        case 'X': row = 0; col = 6; break;
-        case 'Y': row = 6; col = 0; break;
-        case 'Z': row = 2; col = 5; break;
+        case 0x10: row = 1; col = 6; break; // Q
+        case 0x11: row = 6; col = 7; break; // W
+        case 0x12: row = 6; col = 3; break; // E
+        case 0x13: row = 1; col = 2; break; // R
+        case 0x14: row = 1; col = 1; break; // T
+        case 0x15: row = 6; col = 0; break; // Y
+        case 0x16: row = 5; col = 0; break; // U
+        case 0x17: row = 5; col = 1; break; // I
+        case 0x18: row = 5; col = 2; break; // O
+        case 0x19: row = 5; col = 3; break; // P
+        case 0x1a: row = 5; col = 7; break; // [
+        case 0x1b: row = 5; col = 6; break; // ]
 
-        case VK_OEM_COMMA:  row = 4; col = 1; break;
-        case VK_OEM_PERIOD: row = 4; col = 2; break;
-        case VK_DECIMAL:    row = 4; col = 2; break;
-        case VK_OEM_1:      row = 3; col = 2; break;
-        case VK_OEM_MINUS:  row = 3; col = 3; break;
-        case VK_SUBTRACT:   row = 3; col = 3; break;
-        case VK_OEM_2:      row = 7; col = 3; break;
-        case VK_DIVIDE:     row = 7; col = 3; break;
-        case VK_OEM_PLUS:   row = 7; col = 7; break;
-        case VK_ADD:        row = 7; col = 7; break;
-        case VK_MULTIPLY:   row = 7; col = 0; break;
-        case VK_OEM_4:      row = 5; col = 7; break;
-        case VK_OEM_6:      row = 5; col = 6; break;
-        case VK_OEM_5:      row = 3; col = 6; break;
-        case VK_OEM_7:      row = 3; col = 7; break; /* Touche ' / " */
-        case VK_OEM_3:      row = 0; col = 5; break;
+        case 0x1c: case 0x11c: row = 7; col = 5; break; // Ret & Enter
+        case 0x1e: row = 6; col = 5; break; // A
+        case 0x1f: row = 6; col = 6; break; // S
+        case 0x20: row = 1; col = 7; break; // D
+        case 0x21: row = 1; col = 3; break; // F
+        case 0x22: row = 6; col = 2; break; // G
+        case 0x23: row = 6; col = 1; break; // H
+        case 0x24: row = 1; col = 0; break; // J
+        case 0x25: row = 3; col = 0; break; // K
+        case 0x26: row = 7; col = 1; break; // L
+        case 0x27: row = 3; col = 2; break; // ; :
+        case 0x28: row = 3; col = 7; break; // ' "
+
+        // case 0x29: row = 3; col = 7; break; // ' "
+        // case 0x2a: row = 3; col = 7; break; // ' "
+
+
+        case 0x2c: row = 2; col = 5; break; // Z
+        case 0x2d: row = 0; col = 6; break; // X
+        case 0x2e: row = 2; col = 7; break; // C
+        case 0x2f: row = 0; col = 3; break; // V
+        case 0x30: row = 2; col = 2; break; // B
+        case 0x31: row = 0; col = 1; break; // N
+        case 0x32: row = 2; col = 0; break; // M
+        case 0x33: row = 4; col = 1; break; // ,<
+        case 0x34: case 0x53: row = 4; col = 2; break; // .>
+        case 0x35: row = 7; col = 3; break; // /?
+
+        case 0x39: row = 4; col = 0; break; // Space
+
+        case 0x148: row=4; col=3;break; // Up
+        case 0x150: row=4; col=6;break; // Down
+        case 0x14b: row=4; col=5;break; // Left
+        case 0x14d: row=4; col=7;break; // Right
+
+        // Azerty vs Qwerty
+
+        case 0x2b: row = 3; col = 6; break; // azerty *µ qwerty |\
+
+        case 0x56: row = 4; col = 0; break; // <>
+
+
     }
 
     if (row >= 0 && col >= 0) {

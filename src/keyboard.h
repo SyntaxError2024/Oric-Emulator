@@ -8,7 +8,7 @@ extern uint8_t g_key_matrix[8];
 
 void keyboard_reset(void);
 void keyboard_set_key(int row, int col, bool pressed);
-void keyboard_handle_vk(UINT vk, bool pressed);
+void keyboard_handle_vk(UINT vk, DWORD scancode, bool pressed);
 uint8_t keyboard_read_bit(uint8_t row, uint8_t col_mask);
 
 /* Conversion caractère vers coordonnées matrice Oric (avec état Shift) */
