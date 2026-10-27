@@ -91,20 +91,24 @@ uint8_t mem_read(uint16_t addr) {
             return 0xFF;
         }
 
-        /* Routage mémoire haute (0xC000 - 0xFFFF) */
-        if (g_romdis) {
-            /* ROM BASIC désactivée : overlay RAM ou ROM Microdisc */
-            if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
-                return g_microdis_rom[addr - 0xE000];
-            }
-            return g_ram[addr];
-        } else {
-            /* ROM BASIC Atmos active */
-            if (addr >= 0xC000 && g_rom_loaded) {
+        /* Plage 0xE000 - 0xFFFF : Microdisc ROM prioritaire si EPROM active (bit 7 de 0x0314 == 0) */
+        if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
+            return g_microdis_rom[addr - 0xE000];
+        }
+
+        /* Routage mémoire haute (0xC000 - 0xFFFF) : ROM BASIC Atmos ou RAM Overlay */
+        if (addr >= 0xC000) {
+            if (g_romdis) {
+                /* ROM BASIC désactivée : RAM Overlay */
+                return g_ram[addr];
+            } else if (g_rom_loaded) {
+                /* ROM BASIC Atmos active */
                 return g_rom[addr - 0xC000];
             }
             return g_ram[addr];
         }
+
+        return g_ram[addr];
     }
 
     /* Mode Oric Atmos standard sans unité de disquette */
@@ -137,20 +141,25 @@ void mem_write(uint16_t addr, uint8_t val) {
             return;
         }
 
-        /* Routage mémoire haute */
-        if (g_romdis) {
-            if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
-                return; /* EPROM Microdisc protégée en écriture */
-            }
-            g_ram[addr] = val;
-            return;
-        } else {
-            if (addr >= 0xC000) {
-                return; /* ROM BASIC protégée en écriture */
-            }
-            g_ram[addr] = val;
+        /* Plage 0xE000 - 0xFFFF : protégée en écriture si EPROM Microdisc active */
+        if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
             return;
         }
+
+        /* Routage mémoire haute (0xC000 - 0xFFFF) */
+        if (addr >= 0xC000) {
+            if (g_romdis) {
+                /* RAM Overlay accessible en écriture */
+                g_ram[addr] = val;
+                return;
+            } else {
+                /* ROM BASIC Atmos protégée en écriture */
+                return;
+            }
+        }
+
+        g_ram[addr] = val;
+        return;
     }
 
     /* Mode Oric Atmos standard */

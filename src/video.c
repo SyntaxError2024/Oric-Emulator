@@ -79,26 +79,19 @@ void video_render_frame(void) {
      * 3. Drapeaux système officiels (0x021F = 1 pour HIRES, 0x02C0 bit 0)
      */
     bool initial_hires = false;
-    uint8_t b0_start = g_ram[0xA000];
-    uint8_t t0_start = g_ram[0xBB80];
-
-    if ((b0_start & 0x60) == 0 && (b0_start & 0x1F) >= 28 && (b0_start & 0x1F) <= 31) {
-        initial_hires = true;
-    } else if ((t0_start & 0x60) == 0 && (t0_start & 0x1F) >= 28 && (t0_start & 0x1F) <= 31) {
-        initial_hires = true;
-    } else {
-        uint8_t mode_byte = g_ram[0xBFDF] & 0x1F;
+    uint8_t mode_byte = g_ram[0xBFDF] & 0x1F;
+    if ((g_ram[0xBFDF] & 0x60) == 0) {
         if (mode_byte >= 28 && mode_byte <= 31) {
-            initial_hires = true;
-        } else if (mode_byte >= 24 && mode_byte <= 27 && g_ram[0x021F] == 0) {
-            initial_hires = false;
-        } else if (g_ram[0x021F] != 0 || ((g_ram[0x02C0] & 1) != 0)) {
             initial_hires = true;
         } else if (mode_byte >= 24 && mode_byte <= 27) {
             initial_hires = false;
         } else {
             initial_hires = g_hires_mode;
         }
+    } else if (g_ram[0x021F] != 0 || ((g_ram[0x02C0] & 1) != 0)) {
+        initial_hires = true;
+    } else {
+        initial_hires = g_hires_mode;
     }
 
     g_hires_mode = initial_hires;
@@ -117,19 +110,11 @@ void video_render_frame(void) {
                 uint8_t b0 = g_ram[0xA000 + (y * 40)];
                 if ((b0 & 0x60) == 0 && (b0 & 0x1F) >= 24 && (b0 & 0x1F) <= 27) {
                     current_hires = false;
-                } else if (y % 8 == 0) {
-                    uint8_t t0 = g_ram[0xBB80 + ((y / 8) * 40)];
-                    if ((t0 & 0x60) == 0 && (t0 & 0x1F) >= 24 && (t0 & 0x1F) <= 27) {
-                        current_hires = false;
-                    }
                 }
             } else {
-                uint8_t t0 = g_ram[0xBB80 + ((y / 8) * 40)];
-                if ((t0 & 0x60) == 0 && (t0 & 0x1F) >= 28 && (t0 & 0x1F) <= 31) {
-                    current_hires = true;
-                } else {
-                    uint8_t b0 = g_ram[0xA000 + (y * 40)];
-                    if ((b0 & 0x60) == 0 && (b0 & 0x1F) >= 28 && (b0 & 0x1F) <= 31) {
+                if (y % 8 == 0) {
+                    uint8_t t0 = g_ram[0xBB80 + ((y / 8) * 40)];
+                    if ((t0 & 0x60) == 0 && (t0 & 0x1F) >= 28 && (t0 & 0x1F) <= 31) {
                         current_hires = true;
                     }
                 }

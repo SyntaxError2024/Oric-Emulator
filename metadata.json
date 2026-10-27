@@ -1,0 +1,7 @@
+{
+  "name": "Oric Atmos Win32",
+  "description": "Émulateur Oric Atmos complet et cycle-exact en C pur pour Windows (Win32 GDI, WaveOut, FDC Microdisc WD1793).",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

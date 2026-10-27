@@ -161,6 +161,13 @@ static bool tape_load_file_internal(const wchar_t *filename, bool quiet) {
             data_len = (size_t)(end_addr - start_addr + 1);
         }
 
+        /* Si le bloc est un programme BASIC (0x0501) sans autorun explicite,
+         * forcer l'autorun (0xC7) pour que la ROM exécute immédiatement le programme
+         * et enchaîne le chargement des blocs suivants (ex: Wizard's Lair, etc.) */
+        if (start_addr == 0x0501 && hdr[0] == 0x00 && hdr[1] == 0x00) {
+            hdr[1] = 0xC7;
+        }
+
         /* 1. Tonalité d'amorce (200 bits 1) */
         for (int i = 0; i < 200; i++) {
             add_pulse_bit(&pulses, &count, &cap, 1);
