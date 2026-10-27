@@ -425,6 +425,8 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
                 SetWindowTextW(hwnd, L"Oric Atmos - [Nouvelle ROM chargée]");
                 return true;
             } else if (e->type == ENTRY_TAP) {
+                fdc_eject_dsk(0);
+                fdc_reset();
                 tape_load_file(full_path);
                 memory_reset();
                 via_reset();

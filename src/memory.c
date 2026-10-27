@@ -82,7 +82,7 @@ uint8_t mem_read(uint16_t addr) {
     if (g_microdisc_active) {
         /* Registres I/O sur la plage 0x0300 - 0x03FF */
         if ((addr & 0xFF00) == 0x0300) {
-            if (addr >= 0x0310 && addr < 0x031C) {
+            if (addr >= 0x0310 && addr <= 0x031F) {
                 return fdc_read(addr);
             }
             if (addr >= 0x0300 && addr <= 0x030F) {
@@ -126,7 +126,7 @@ void mem_write(uint16_t addr, uint8_t val) {
     if (g_microdisc_active) {
         /* Registres I/O 0x0300 - 0x03FF */
         if ((addr & 0xFF00) == 0x0300) {
-            if (addr >= 0x0310 && addr < 0x031C) {
+            if (addr >= 0x0310 && addr <= 0x031F) {
                 fdc_write(addr, val);
                 return;
             }

@@ -320,7 +320,7 @@ void fdc_step(uint32_t cycles) {
 }
 
 uint8_t fdc_read(uint16_t addr) {
-    uint8_t reg = addr & 0x07;
+    uint8_t reg = addr & 0x0F;
 
     switch (reg) {
         case 0: /* 0x0310 : Registre de Statut */
@@ -439,21 +439,21 @@ uint8_t fdc_read(uint16_t addr) {
             }
             return g_wd.r_data;
 
-        case 4: /* 0x0314 : Microdisc Control / INTRQ State */
+        case 4: case 5: case 6: case 7: /* 0x0314 - 0x0317 : Microdisc Control / INTRQ State */
             /* Bit 7 reflète l'état inversé de INTRQ (0 = actif, 0x80 = inactif) */
             return g_wd.md_intrq | 0x7F;
 
+        case 8: case 9: case 10: case 11:
+        case 12: case 13: case 14: case 15: /* 0x0318 - 0x031F : Microdisc DRQ State */
+            return g_wd.md_drq | 0x7F;
+
         default:
-            /* 0x0318 : Microdisc DRQ State */
-            if (reg == 8 || (addr & 0x0F) == 8) {
-                return g_wd.md_drq | 0x7F;
-            }
             return 0xFF;
     }
 }
 
 void fdc_write(uint16_t addr, uint8_t val) {
-    uint8_t reg = addr & 0x07;
+    uint8_t reg = addr & 0x0F;
 
     switch (reg) {
         case 0: /* 0x0310 : Registre de Commande */
@@ -683,7 +683,7 @@ void fdc_write(uint16_t addr, uint8_t val) {
             }
             break;
 
-        case 4: /* 0x0314 : Microdisc Control Latch */
+        case 4: case 5: case 6: case 7: /* 0x0314 - 0x0317 : Microdisc Control Latch */
             g_wd.md_control = val;
             g_wd.c_drive = (val & MDSF_DRIVE) >> 5;
             g_wd.c_side  = (val & MDSF_SIDE) ? 1 : 0;
@@ -693,11 +693,12 @@ void fdc_write(uint16_t addr, uint8_t val) {
             cpu_update_irq();
             break;
 
+        case 8: case 9: case 10: case 11:
+        case 12: case 13: case 14: case 15: /* 0x0318 - 0x031F : écriture directe sur la ligne DRQ */
+            g_wd.md_drq = val & 0x80;
+            break;
+
         default:
-            if (reg == 8 || (addr & 0x0F) == 8) {
-                /* 0x0318 : écriture directe sur la ligne DRQ */
-                g_wd.md_drq = val & 0x80;
-            }
             break;
     }
 }

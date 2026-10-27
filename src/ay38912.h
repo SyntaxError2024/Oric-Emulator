@@ -3,7 +3,7 @@
 
 #include "common.h"
 
-#define AY_NUM_BUFFERS 4
+#define AY_NUM_BUFFERS 8
 #define AY_BUFFER_SAMPLES 441 /* 441 échantillons à 22050 Hz = ~20ms = 1 trame 50Hz */
 
 /* --- AY-3-8912 PSG (Générateur Sonore & Port Clavier) --- */

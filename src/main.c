@@ -123,7 +123,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 wchar_t *ext = wcsrchr(filename, L'.');
                 if (ext && (_wcsicmp(ext, L".tap") == 0)) {
                     debug_log(L"Fichier .TAP déposé : %ls", filename);
+                    fdc_eject_dsk(0);
+                    fdc_reset();
                     if (tape_load_file(filename)) {
+                        memory_reset();
+                        via_reset();
+                        ay_reset();
+                        keyboard_reset();
+                        tape_reset();
+                        g_tape.auto_cload_triggered = false;
+                        cpu_reset();
+                        g_browser.active = false;
                         wchar_t title[512];
                         swprintf(title, 512, L"Oric Atmos - [K7 chargée : %ls]",
                                  g_tape.current_name[0] ? (wchar_t *)g_tape.current_name : L"Inconnu");
@@ -402,6 +412,8 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         return 1;
     }
 
+    audio_init(hwnd);
+
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
     debug_log(L"Fenêtre d'émulation ouverte (%dx%d)", rc.right - rc.left, rc.bottom - rc.top);
@@ -425,6 +437,8 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
         wchar_t *ext = wcsrchr(p, L'.');
         if (ext) {
             if (_wcsicmp(ext, L".tap") == 0) {
+                fdc_eject_dsk(0);
+                fdc_reset();
                 if (tape_load_file(p)) {
                     file_passed_on_cli = true;
                     wchar_t title[512];

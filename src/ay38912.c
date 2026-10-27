@@ -150,15 +150,32 @@ void audio_update(void) {
     if (!g_ay.audio_enabled) return;
 
     AY38912 *ay = &g_ay;
-    WAVEHDR *hdr = &ay->waveHdr[ay->currentBuffer];
+    int buf_idx = ay->currentBuffer;
+    WAVEHDR *hdr = &ay->waveHdr[buf_idx];
 
-    /* Si le tampon est encore en cours de lecture par le pilote, ne pas le corrompre */
+    /* Si le tampon courant est encore en cours de lecture, chercher un tampon libre dans l'anneau */
     if (hdr->dwFlags & WHDR_PREPARED) {
         if (!(hdr->dwFlags & WHDR_DONE)) {
-            return;
+            bool found_free = false;
+            for (int b = 1; b < AY_NUM_BUFFERS; b++) {
+                int test_idx = (buf_idx + b) % AY_NUM_BUFFERS;
+                WAVEHDR *thdr = &ay->waveHdr[test_idx];
+                if (!(thdr->dwFlags & WHDR_PREPARED) || (thdr->dwFlags & WHDR_DONE)) {
+                    buf_idx = test_idx;
+                    hdr = thdr;
+                    found_free = true;
+                    break;
+                }
+            }
+            if (!found_free) {
+                return; /* Tous les tampons sont encore en lecture */
+            }
         }
-        waveOutUnprepareHeader(ay->hWaveOut, hdr, sizeof(WAVEHDR));
+        if (hdr->dwFlags & WHDR_PREPARED) {
+            waveOutUnprepareHeader(ay->hWaveOut, hdr, sizeof(WAVEHDR));
+        }
     }
+    ay->currentBuffer = buf_idx;
 
     short *buf = ay->audioBuffer[ay->currentBuffer];
 

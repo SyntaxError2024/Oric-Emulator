@@ -27,6 +27,16 @@
   - common.c / common.h : Débogage console UTF-8 et utilitaires
   - main.c : Fenêtre Win32 GDI, boucle d'émulation 50 Hz, glisser-déposer .TAP/.DSK/.ROM
 
+- Audio et son de chargement K7 :
+  - Restauration de l'appel `audio_init(hwnd)` à l'ouverture de la fenêtre Win32.
+  - Extension du pool de tampons WaveOut à 8 tampons annulaires (160 ms) avec sélection dynamique des tampons libres.
+  - Synthèse audio FSK douce pour le son de modulation de la cassette pendant le chargement.
+
+- Contrôleur de disquette Microdisc (FDC WD1793) :
+  - Correction du décodage d'adresse de registres `addr & 0x0F` (l'ancien masque `0x07` confondait le registre DRQ 0x0318 avec 0x0310).
+  - Couverture complète de la plage d'E/S FDC Microdisc 0x0310-0x031F dans `memory.c`.
+  - Éjection automatique de l'unité de disquette lors du chargement d'un fichier .TAP pour garantir le démarrage en BASIC pur.
+
 - Conformité Windows :
   - Compilable avec MinGW64 (gcc) avec option -municode
   - Aucune bibliothèque externe (uniquement GDI32, WinMM, Shell32 natifs)
