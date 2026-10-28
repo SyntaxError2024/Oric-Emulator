@@ -46,6 +46,11 @@ void cpu_reset(void) {
     debug_log(L"CPU 6502 réinitialisé (PC=0x%04X, SP=0x%02X)", g_cpu.pc, g_cpu.sp);
 }
 
+void cpu_trigger_nmi(void) {
+    g_cpu.nmi_pending = true;
+    debug_log(L"CPU 6502 NMI déclenché (Soft Reset)");
+}
+
 void cpu_step(void) {
     /* Auto-CLOAD si un fichier TAP a été préchargé au démarrage (attente que BASIC affiche Ready à ~1.52s) */
     if (g_tape.loaded && !g_tape.auto_cload_triggered) {

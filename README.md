@@ -49,6 +49,7 @@ gcc -O3 common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c
 2. L'écran de démarrage Oric Atmos s'affiche (`ORIC BASIC 1.1`).
 3. Glissez-déposez un fichier `.TAP` sur la fenêtre (par exemple `Welcome To The Oric Atmos.tap` ou `Cyclotron.tap`).
 4. Touches utiles :
-   - `F1` : Afficher la boîte d'aide.
-   - `F5` : Réinitialisation matérielle (Reset).
+   - `F1` : Ouvrir / Fermer l'explorateur de fichiers (.TAP, .DSK, .ROM).
+   - `F11` : NMI (Soft Reset).
+   - `F12` : Réinitialisation matérielle (Hardware Reset).
    - `Alt+Entrée` : Basculer entre Plein Écran et Mode Fenêtré.

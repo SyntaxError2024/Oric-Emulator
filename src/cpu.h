@@ -28,5 +28,6 @@ void cpu_step(void);
 void cpu_push(uint8_t val);
 uint8_t cpu_pop(void);
 void cpu_update_irq(void);
+void cpu_trigger_nmi(void);
 
 #endif /* CPU_H */

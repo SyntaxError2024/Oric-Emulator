@@ -183,15 +183,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
 
         case WM_KEYDOWN:
-            if ((wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) || wParam == VK_F11) {
+            if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) {
                 toggle_fullscreen(hwnd);
                 return 0;
             }
-            if (wParam == VK_F2) {
+            if (wParam == VK_F1 || wParam == VK_F2) {
                 g_browser.active = !g_browser.active;
                 if (g_browser.active) {
                     browser_refresh();
                 }
+                return 0;
+            }
+            if (wParam == VK_F11) {
+                debug_log(L"NMI (Soft Reset F11)");
+                cpu_trigger_nmi();
+                return 0;
+            }
+            if (wParam == VK_F12 || wParam == VK_F5) {
+                debug_log(L"Réinitialisation matérielle (Reset F12)");
+                g_browser.active = false;
+                fdc_reset();
+                memory_reset();
+                via_reset();
+                ay_reset();
+                keyboard_reset();
+                tape_reset();
+                cpu_reset();
                 return 0;
             }
             if (g_browser.active) {
@@ -203,27 +220,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 toggle_fullscreen(hwnd);
                 return 0;
             }
-            if (wParam == VK_F5) {
-                debug_log(L"Réinitialisation matérielle (Reset F5)");
-                g_browser.active = false;
-                fdc_reset();
-                memory_reset();
-                via_reset();
-                ay_reset();
-                keyboard_reset();
-                tape_reset();
-                cpu_reset();
-                return 0;
-            }
-            if (wParam == VK_F1) {
+            if (wParam == VK_F3) {
                 MessageBoxW(hwnd,
                     L"Émulateur Oric Atmos Win32 pur (MinGW64 / C Unicode)\n\n"
                     L"Commandes :\n"
-                    L"- F2 : Ouvrir / Fermer l'explorateur de fichiers Oric\n"
-                    L"- Glisser-déposer un fichier .TAP, .ROM ou .DSK\n"
-                    L"- Alt+Entrée ou F11 : Plein écran (centré, ratio 4:3, pixels entiers)\n"
+                    L"- F1 : Ouvrir / Fermer l'explorateur de fichiers Oric\n"
+                    L"- F11 : NMI (Soft Reset)\n"
+                    L"- F12 : Réinitialisation matérielle (Hard Reset)\n"
+                    L"- Alt+Entrée : Plein écran (centré, ratio 4:3, pixels entiers)\n"
                     L"- Échap : Quitter le plein écran\n"
-                    L"- F5 : Réinitialisation matérielle (Reset)\n"
+                    L"- Glisser-déposer un fichier .TAP, .ROM ou .DSK\n"
                     L"- Clavier AZERTY / QWERTY complet\n",
                     L"Aide Oric Atmos", MB_OK | MB_ICONINFORMATION);
                 return 0;

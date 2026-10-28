@@ -270,7 +270,7 @@ void browser_render(void) {
     /* Ligne 27 : Aide quitter (Fond noir, Texte jaune) */
     screen[27 * 40 + 0] = 16 + 0;
     screen[27 * 40 + 1] = 3;
-    const char *help2 = " [Echap] Quitter explorateur (BASIC)   ";
+    const char *help2 = " [F1/Echap] Quitter explorateur (BASIC)";
     for (int i = 0; i < 38 && help2[i]; i++) {
         screen[27 * 40 + 2 + i] = (uint8_t)help2[i];
     }
@@ -358,6 +358,7 @@ bool browser_handle_key(UINT vk, HWND hwnd) {
             update_scroll();
             return true;
 
+        case VK_F1:
         case VK_ESCAPE:
             /* Fermer l'explorateur et lancer le boot BASIC normal */
             g_browser.active = false;
