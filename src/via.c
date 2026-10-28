@@ -69,10 +69,25 @@ uint8_t via_read(uint8_t reg) {
 
 void via_write(uint8_t reg, uint8_t val) {
     switch (reg) {
-        case 0x00:
+        case 0x00: {
+            uint8_t old_orb = g_via.orb;
             g_via.orb = val;
             g_via.ifr &= ~0x10; /* L'écriture dans ORB acquitte CB1 */
+            /* Si le relais moteur s'éteint (fin de bloc K7) */
+            if ((old_orb & 0x40) && !(val & 0x40)) {
+                if (g_via.t1l < 1000) {
+                    g_via.t1l = 10000;
+                    g_via.t1c = 10000;
+                }
+                g_via.ifr &= ~0x40;
+            }
+            /* Si le relais moteur s'allume (début de bloc K7) */
+            if (!(old_orb & 0x40) && (val & 0x40)) {
+                g_via.ifr &= ~0x10;
+                g_tape.bit_cycles_left = 350;
+            }
             break;
+        }
         case 0x01:
         case 0x0F:
             g_via.ora = val;
@@ -117,8 +132,20 @@ void via_write(uint8_t reg, uint8_t val) {
             g_via.ifr &= ~(val & 0x7F);
             break;
         case 0x0E:
-            if (val & 0x80) g_via.ier |= (val & 0x7F);
-            else g_via.ier &= ~(val & 0x7F);
+            if (val & 0x80) {
+                g_via.ier |= (val & 0x7F);
+                /* Quand l'interruption Timer 1 est réactivée en fin de lecture K7 ($EDE2),
+                 * si t1l contenait encore la valeur de mesure K7 (< 1000 cycles),
+                 * rétablir immédiatement le timer système 100 Hz (10000 cycles) et purger
+                 * l'éventuelle interruption IFR6 périmée pour éviter d'asphyxier le CPU. */
+                if ((val & 0x40) && g_via.t1l < 1000) {
+                    g_via.t1l = 10000;
+                    g_via.t1c = 10000;
+                    g_via.ifr &= ~0x40;
+                }
+            } else {
+                g_via.ier &= ~(val & 0x7F);
+            }
             break;
     }
     cpu_update_irq();
@@ -129,10 +156,10 @@ void via_step(uint32_t cycles) {
         if (g_via.t1c <= cycles) {
             g_via.ifr |= 0x40;
             /* Mode continu : rechargement depuis le verrou t1l.
-             * Si t1l est temporairement inférieur à 100 cycles (ex: écriture en deux temps
+             * Si t1l est temporairement inférieur à 1000 cycles (ex: mesure K7 208 cycles ou écriture en deux temps
              * du mot 16-bit 0x2710 où le registre bas 0x10 est écrit avant le registre haut 0x27),
-             * on évite d'emballer le CPU à 62 kHz d'interruptions en rechargeant 10000 cycles (100 Hz). */
-            uint32_t reload = (g_via.t1l < 100) ? 10000 : g_via.t1l;
+             * on évite d'emballer le CPU à des dizaines de kHz d'interruptions en rechargeant 10000 cycles (100 Hz). */
+            uint32_t reload = (g_via.t1l < 1000) ? 10000 : g_via.t1l;
             g_via.t1c = (uint16_t)(reload - ((cycles - g_via.t1c) % reload));
         } else {
             g_via.t1c -= cycles;

@@ -61,11 +61,6 @@ uint8_t keyboard_read_bit(uint8_t row, uint8_t col_mask) {
  * Table issue directement du décodage ROM Atmos ($FF78)
  * ============================================================================ */
 bool keyboard_char_to_matrix(char ch, int *out_row, int *out_col, bool *out_shift) {
-
-    if (true) return false; //@todo
-
-    printf("keyboard_char_to_matrix() %d\n",ch);
-
     if (!out_row || !out_col || !out_shift) return false;
     *out_shift = false;
 

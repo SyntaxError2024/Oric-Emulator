@@ -161,11 +161,11 @@ static bool tape_load_file_internal(const wchar_t *filename, bool quiet) {
             data_len = (size_t)(end_addr - start_addr + 1);
         }
 
-        /* Si le bloc est un programme BASIC (0x0501) sans autorun explicite,
-         * forcer l'autorun (0xC7) pour que la ROM exécute immédiatement le programme
+        /* Si le bloc est un programme BASIC (0x0501 ou hdr[2] == 0x00) sans autorun explicite,
+         * forcer l'autorun dans hdr[3] (0xC7) pour que la ROM exécute immédiatement le programme (RUN)
          * et enchaîne le chargement des blocs suivants (ex: Wizard's Lair, etc.) */
-        if (start_addr == 0x0501 && hdr[0] == 0x00 && hdr[1] == 0x00) {
-            hdr[1] = 0xC7;
+        if ((start_addr == 0x0501 || hdr[2] == 0x00) && hdr[3] == 0x00) {
+            hdr[3] = 0xC7;
         }
 
         /* 1. Tonalité d'amorce (200 bits 1) */
@@ -245,6 +245,14 @@ bool tape_load_file_quiet(const wchar_t *filename) {
 
 void tape_step(uint32_t cycles) {
     if (!g_tape.loaded || !g_tape.pulse_buf || g_tape.pulse_count == 0) return;
+
+    /* Auto-CLOAD différé : si la cassette a été chargée au démarrage ou via l'explorateur,
+     * injecter 'cload""' dès que le boot BASIC est stabilisé (après 2.0s de CPU) */
+    if (!g_tape.auto_cload_triggered && g_cpu.cycles >= 2000000) {
+        g_tape.auto_cload_triggered = true;
+        typein_queue("\rcload\"\"\r");
+        debug_log(L"Auto-CLOAD différé déclenché après boot BASIC : saisie de '\\rcload\"\"\\r'");
+    }
 
     /* Le relais moteur de la cassette est commandé par le bit PB6 du VIA */
     bool motor_on = (g_via.orb & 0x40) != 0;
