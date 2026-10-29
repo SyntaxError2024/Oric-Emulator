@@ -8,7 +8,5 @@ coverage/
 !.env.example
 
 app/
-*.exe
 *.o
 settings.ini
-
