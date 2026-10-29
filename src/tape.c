@@ -2,6 +2,7 @@
 #include "keyboard.h"
 #include "via.h"
 #include "cpu.h"
+#include "fdc.h"
 
 TapeState g_tape;
 
@@ -244,6 +245,7 @@ bool tape_load_file_quiet(const wchar_t *filename) {
 }
 
 void tape_step(uint32_t cycles) {
+    if (g_microdisc_active) return;
     if (!g_tape.loaded || !g_tape.pulse_buf || g_tape.pulse_count == 0) return;
 
     /* Auto-CLOAD différé : si la cassette a été chargée au démarrage ou via l'explorateur,

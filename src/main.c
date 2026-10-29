@@ -512,11 +512,12 @@ static int run_emulator(HINSTANCE hInstance, const wchar_t *cmdLine, int nCmdSho
             continue;
         }
 
-        /* Émulation de la trame 50Hz (accélération turbo pendant lecture cassette) */
-        bool tape_running = (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);
+        /* Émulation de la trame 50Hz (accélération turbo pendant lecture cassette ou accès disque) */
+        bool tape_running = !g_microdisc_active && (g_via.orb & 0x40) && g_tape.loaded && (g_tape.pulse_pos < g_tape.pulse_count);
+        bool disk_running = g_microdisc_active && (g_wd.current_op != COP_NONE || g_wd.delayed_drq > 0 || g_wd.delayed_int > 0);
         g_tape.frame_start_pos = g_tape.pulse_pos;
 
-        uint32_t frame_cycles = tape_running ? (CYCLES_PER_FRAME * 10) : CYCLES_PER_FRAME;
+        uint32_t frame_cycles = (tape_running || disk_running) ? (CYCLES_PER_FRAME * 10) : CYCLES_PER_FRAME;
         uint64_t target_cycles = g_cpu.cycles + frame_cycles;
         while (g_cpu.cycles < target_cycles) {
             uint64_t before = g_cpu.cycles;

@@ -11,7 +11,7 @@ bool g_microdisc_active = false;
 /* Prototypes internes */
 static void fdc_cache_track(FdcDrive *d, int track, int side);
 static FdcSector *fdc_find_sector(uint8_t sec_id);
-static void fdc_seek_track(uint8_t track);
+static void fdc_seek_track(uint8_t track, bool update_r_track);
 
 void fdc_init(void) {
     memset(&g_wd, 0, sizeof(g_wd));
@@ -138,10 +138,14 @@ bool fdc_insert_dsk(int drive, const wchar_t *path) {
 
     /* S'assurer que la ROM Microdisc est bien chargée */
     if (!g_microdis_loaded) {
-        if (!oric_load_microdis_rom(L"./roms/MICRODIS.ROM")) {
-            if (!oric_load_microdis_rom(L"../roms/MICRODIS.ROM")) {
-                oric_load_microdis_rom(L"MICRODIS.ROM");
-            }
+        if (!oric_load_microdis_rom(L"./roms/MICRODIS.ROM") &&
+            !oric_load_microdis_rom(L"roms/MICRODIS.ROM") &&
+            !oric_load_microdis_rom(L"./roms/microdis.rom") &&
+            !oric_load_microdis_rom(L"roms/microdis.rom") &&
+            !oric_load_microdis_rom(L"../roms/MICRODIS.ROM") &&
+            !oric_load_microdis_rom(L"../roms/microdis.rom") &&
+            !oric_load_microdis_rom(L"MICRODIS.ROM")) {
+            oric_load_microdis_rom(L"microdis.rom");
         }
     }
 
@@ -202,7 +206,12 @@ static void fdc_cache_track(FdcDrive *d, int track, int side) {
 
     if (side >= (int)d->num_sides || track >= (int)d->num_tracks) return;
 
-    size_t trk_offset = 256 + ((size_t)side * d->num_tracks + (size_t)track) * FDC_TRACK_LEN;
+    size_t trk_offset;
+    if (d->geometry == 2) {
+        trk_offset = 256 + ((size_t)track * d->num_sides + (size_t)side) * FDC_TRACK_LEN;
+    } else {
+        trk_offset = 256 + ((size_t)side * d->num_tracks + (size_t)track) * FDC_TRACK_LEN;
+    }
     if (trk_offset + FDC_TRACK_LEN > d->raw_size) return;
 
     uint8_t *ptr = d->raw_image + trk_offset;
@@ -264,7 +273,7 @@ static FdcSector *fdc_find_sector(uint8_t sec_id) {
     return NULL;
 }
 
-static void fdc_seek_track(uint8_t track) {
+static void fdc_seek_track(uint8_t track, bool update_r_track) {
     FdcDrive *d = &g_drives[g_wd.c_drive];
     if (d->loaded) {
         if (track >= d->num_tracks) {
@@ -277,7 +286,9 @@ static void fdc_seek_track(uint8_t track) {
         fdc_cache_track(d, track, g_wd.c_side);
         g_wd.c_track = track;
         g_wd.c_sector = 0;
-        g_wd.r_track = track;
+        if (update_r_track) {
+            g_wd.r_track = track;
+        }
 
         g_wd.delayed_int = 20;
         if (g_wd.c_track == 0) {
@@ -466,13 +477,13 @@ void fdc_write(uint16_t addr, uint8_t val) {
                         /* Restore : tête sur piste 0 */
                         g_wd.r_status = WSF_BUSY;
                         if (val & 0x08) g_wd.r_status |= WSFI_HEADL;
-                        fdc_seek_track(0);
+                        fdc_seek_track(0, true);
                         g_wd.current_op = COP_NONE;
                     } else {
                         /* Seek : tête sur la piste indiquée par le registre de données */
                         g_wd.r_status = WSF_BUSY;
                         if (val & 0x08) g_wd.r_status |= WSFI_HEADL;
-                        fdc_seek_track(g_wd.r_data);
+                        fdc_seek_track(g_wd.r_data, true);
                         g_wd.current_op = COP_NONE;
                     }
                     break;
@@ -481,9 +492,9 @@ void fdc_write(uint16_t addr, uint8_t val) {
                     g_wd.r_status = WSF_BUSY;
                     if (val & 0x08) g_wd.r_status |= WSFI_HEADL;
                     if (g_wd.last_step_in) {
-                        fdc_seek_track((uint8_t)(g_wd.c_track + 1));
+                        fdc_seek_track((uint8_t)(g_wd.c_track + 1), (val & 0x10) != 0);
                     } else {
-                        fdc_seek_track((g_wd.c_track > 0) ? (uint8_t)(g_wd.c_track - 1) : 0);
+                        fdc_seek_track((g_wd.c_track > 0) ? (uint8_t)(g_wd.c_track - 1) : 0, (val & 0x10) != 0);
                     }
                     g_wd.current_op = COP_NONE;
                     break;
@@ -491,7 +502,7 @@ void fdc_write(uint16_t addr, uint8_t val) {
                 case 0x40: /* Step-In (Type I) */
                     g_wd.r_status = WSF_BUSY;
                     if (val & 0x08) g_wd.r_status |= WSFI_HEADL;
-                    fdc_seek_track((uint8_t)(g_wd.c_track + 1));
+                    fdc_seek_track((uint8_t)(g_wd.c_track + 1), (val & 0x10) != 0);
                     g_wd.last_step_in = true;
                     g_wd.current_op = COP_NONE;
                     break;
@@ -500,9 +511,9 @@ void fdc_write(uint16_t addr, uint8_t val) {
                     g_wd.r_status = WSF_BUSY;
                     if (val & 0x08) g_wd.r_status |= WSFI_HEADL;
                     if (g_wd.c_track > 0) {
-                        fdc_seek_track((uint8_t)(g_wd.c_track - 1));
+                        fdc_seek_track((uint8_t)(g_wd.c_track - 1), (val & 0x10) != 0);
                     } else {
-                        fdc_seek_track(0);
+                        fdc_seek_track(0, (val & 0x10) != 0);
                     }
                     g_wd.last_step_in = false;
                     g_wd.current_op = COP_NONE;
@@ -520,7 +531,7 @@ void fdc_write(uint16_t addr, uint8_t val) {
                         break;
                     }
                     g_wd.curr_sec_len = 1 << (g_wd.curr_sector->id_ptr[4] + 7);
-                    g_wd.r_status = WSF_BUSY | WSF_NOTREADY;
+                    g_wd.r_status = WSF_BUSY;
                     g_wd.delayed_drq = 60;
                     g_wd.current_op = (val & 0x10) ? COP_READ_SECTORS : COP_READ_SECTOR;
                     break;
@@ -537,7 +548,7 @@ void fdc_write(uint16_t addr, uint8_t val) {
                         break;
                     }
                     g_wd.curr_sec_len = 1 << (g_wd.curr_sector->id_ptr[4] + 7);
-                    g_wd.r_status = WSF_BUSY | WSF_NOTREADY;
+                    g_wd.r_status = WSF_BUSY;
                     g_wd.delayed_drq = 500;
                     g_wd.current_op = (val & 0x10) ? COP_WRITE_SECTORS : COP_WRITE_SECTOR;
                     break;
@@ -561,7 +572,7 @@ void fdc_write(uint16_t addr, uint8_t val) {
                             cpu_update_irq();
                             break;
                         }
-                        g_wd.r_status = WSF_NOTREADY | WSF_BUSY | WSF_DRQ;
+                        g_wd.r_status = WSF_BUSY | WSF_DRQ;
                         g_wd.md_drq = 0;
                         g_wd.current_op = COP_READ_ADDRESS;
                     } else {
@@ -585,13 +596,13 @@ void fdc_write(uint16_t addr, uint8_t val) {
                     if ((val & 0x10) == 0x00) {
                         /* Read Track (Type III) */
                         g_wd.curr_offs = 0;
-                        g_wd.r_status = WSF_BUSY | WSF_NOTREADY;
+                        g_wd.r_status = WSF_BUSY;
                         g_wd.delayed_drq = 60;
                         g_wd.current_op = COP_READ_TRACK;
                     } else {
                         /* Write Track (Format) */
                         g_wd.curr_offs = 0;
-                        g_wd.r_status = WSF_NOTREADY | WSF_BUSY;
+                        g_wd.r_status = WSF_BUSY;
                         g_wd.delayed_drq = 500;
                         g_wd.md_drq = 0x80;
                         g_wd.md_intrq = 0x80;

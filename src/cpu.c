@@ -52,8 +52,8 @@ void cpu_trigger_nmi(void) {
 }
 
 void cpu_step(void) {
-    /* Auto-CLOAD si un fichier TAP a été préchargé au démarrage (attente que BASIC affiche Ready à ~1.52s) */
-    if (g_tape.loaded && !g_tape.auto_cload_triggered) {
+    /* Auto-CLOAD si un fichier TAP a été préchargé au démarrage (uniquement si aucune disquette n'est insérée) */
+    if (!g_microdisc_active && g_tape.loaded && !g_tape.auto_cload_triggered) {
         if (g_cpu.cycles > 2000000) { /* ~2.0s après boot BASIC complet */
             g_tape.auto_cload_triggered = true;
             typein_queue("cload\"\"\r");

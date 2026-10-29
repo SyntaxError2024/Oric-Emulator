@@ -91,20 +91,18 @@ uint8_t mem_read(uint16_t addr) {
             return 0xFF;
         }
 
-        /* Plage 0xE000 - 0xFFFF : Microdisc ROM prioritaire si EPROM active (bit 7 de 0x0314 == 0) */
-        if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
-            return g_microdis_rom[addr - 0xE000];
-        }
-
-        /* Routage mémoire haute (0xC000 - 0xFFFF) : ROM BASIC Atmos ou RAM Overlay */
+        /* Routage mémoire haute (0xC000 - 0xFFFF) avec Microdisc */
         if (addr >= 0xC000) {
-            if (g_romdis) {
-                /* ROM BASIC désactivée : RAM Overlay */
-                return g_ram[addr];
-            } else if (g_rom_loaded) {
-                /* ROM BASIC Atmos active */
+            /* 1. Si le bit 1 de 0x0314 est 1 (g_romdis == false), la ROM BASIC Atmos interne est active sur tout 0xC000-0xFFFF */
+            if (!g_romdis && g_rom_loaded) {
                 return g_rom[addr - 0xC000];
             }
+            /* 2. Si le bit 1 de 0x0314 est 0 (ROM BASIC désactivée, ROMDIS actif) :
+             *    Si le bit 7 de 0x0314 est 0 (g_microdis_eprom == true), l'EPROM Microdisc 8 Ko est active à 0xE000-0xFFFF */
+            if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
+                return g_microdis_rom[addr - 0xE000];
+            }
+            /* 3. Sinon (ou sur 0xC000-0xDFFF), c'est la RAM d'overlay 64 Ko */
             return g_ram[addr];
         }
 
@@ -141,23 +139,10 @@ void mem_write(uint16_t addr, uint8_t val) {
             return;
         }
 
-        /* Plage 0xE000 - 0xFFFF : protégée en écriture si EPROM Microdisc active */
-        if (addr >= 0xE000 && g_microdis_loaded && g_microdis_eprom) {
-            return;
-        }
-
-        /* Routage mémoire haute (0xC000 - 0xFFFF) */
-        if (addr >= 0xC000) {
-            if (g_romdis) {
-                /* RAM Overlay accessible en écriture */
-                g_ram[addr] = val;
-                return;
-            } else {
-                /* ROM BASIC Atmos protégée en écriture */
-                return;
-            }
-        }
-
+        /* Sur l'Oric avec Microdisc, toutes les écritures en mémoire haute (0xC000-0xFFFF)
+         * écrivent toujours dans la RAM dynamique sous-jacente (Overlay RAM), car les puces
+         * ROM et EPROM ne possèdent pas de broche Write-Enable et ignorent les écritures.
+         * Cela permet à Sedoric et au BIOS d'initialiser et de charger l'OS dans l'overlay RAM. */
         g_ram[addr] = val;
         return;
     }

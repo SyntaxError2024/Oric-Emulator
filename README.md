@@ -40,7 +40,7 @@ Double-cliquez simplement sur `build.bat`.
 
 ### En ligne de commande
 ```cmd
-gcc -O3 common.c cpu.c memory.c via.c ay38912.c keyboard.c tape.c video.c main.c -o oric_atmos.exe -municode -lgdi32 -lwinmm -lshell32
+gcc -O2 -municode -mwindows -s -static src/main.c src/cpu.c src/memory.c src/via.c src/ay38912.c src/keyboard.c src/tape.c src/video.c src/browser.c src/fdc.c src/common.c -o oric_atmos.exe -lgdi32 -lwinmm -lshell32
 ```
 
 ## Utilisation
